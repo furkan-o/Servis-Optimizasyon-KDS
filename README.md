@@ -24,7 +24,7 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
 
 3. **Projeyi Çalıştırma**
    - Projeyi Visual Studio ile açın.
-   - `form1.cs` dosyasındaki `MesafeMatrisiHesapla` fonksiyonunda `"API BURAYA"` kısmına kendi Google API anahtarınızı `"ŞİRKET ADRESİ"` kısmına başlangıç adresi girin.
+   - `form1.cs` dosyasındaki `MesafeMatrisiHesapla` fonksiyonunda `"API BURAYA"` kısmına kendi Google API anahtarınızı, `"ŞİRKET ADRESİ"` kısmına başlangıç adresini, `"İl bilgisi Ekle"` kısmına çalışılacak ili (adres verilerinde eksik varsa) girin.
    - Gerekli NuGet paketlerini yükleyin.
    - Projeyi başlatın.
 
