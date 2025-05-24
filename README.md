@@ -1,6 +1,6 @@
 # Servis Optimizasyon Karar Destek Sistemi
 
-Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uygun servis araç kombinasyonunu belirleyen bir karar destek sistemidir. Windows Forms (.NET 8) ile geliştirilmiştir.
+Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uygun servis araç kombinasyonunu belirleyen bir karar destek sistemidir.
 
 ## Özellikler
 
@@ -9,7 +9,6 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
 - Genetik algoritma ile optimum servis rotası (Gezgin Satıcı Problemi) çözer.
 - Servis araçlarının kapasite ve kilometre bazlı ücretlerini dikkate alarak en uygun maliyetli kombinasyonu bulur.
 - Sonuçları Word veya metin dosyası olarak raporlayabilir.
-- Kullanıcı dostu arayüz.
 
 ## Kurulum
 
@@ -41,11 +40,32 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
 
 - `form1.cs` : Ana uygulama kodları ve algoritmalar.
 - `servisucretleri.json` : Servis araçlarının kilometre ve kapasite bazlı ücretleri.
+`Yapısı:`
+ {
+    "kilometreAraligi": "10-20",
+    "baslangicKm": 10,
+    "bitisKm": 20,
+    "servisUcretleri": {
+      "19": 1000,
+      "27": 2000,
+      "46": 3000
+    }
+  },
+
 - `[bolge].json` : Her bölge için çalışan adresleri.
+`Yapısı:`
+{
+    "adSoyad": "Gordon Norman",
+    "yaklasikAdres": "Hamidiye mah. Fatih cd."
+  },
+  {
+    "adSoyad": "Samuel Serif",
+    "yaklasikAdres": "Seyrantepe mah. Bahar sk."
+  },
 
 ## Lisans
 
-Bu proje [MIT Lisansı](LICENSE.txt) ile lisanslanmıştır.
+Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
 
 ## Katkı
 
