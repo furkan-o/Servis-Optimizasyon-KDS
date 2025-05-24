@@ -504,7 +504,7 @@ namespace ServisOptimizasyonSistemi
 
                 for (int i = 0; i < calisanSayisi; i++)
                 {
-                    adresler[i + 1] = calisanlar[i].YaklasikAdres + ", İl bilgisi Ekle"; // Adres yazmayı bilmeyen çalışanlar için il verisini manüel ekle
+                    adresler[i + 1] = calisanlar[i].YaklasikAdres + ", İl bilgisi Ekle"; // Çalışanların il verisini manüel ekle
                 }
 
                 // Süreyi azaltmak için adresleri küçük gruplara bölelim
@@ -589,8 +589,8 @@ namespace ServisOptimizasyonSistemi
         #endregion
 
         #region Genetik Algoritma İşlemleri
-        //Kaynaklar: https://www.datacamp.com/tutorial/genetic-algorithm-python
         //Muzaffer Kapanoglu Mutasyon Operatorleri https://www.youtube.com/watch?v=3mLE8TsyWPs
+        //Genetik Gösterimler Gezgin Satıcı Problemi https://www.youtube.com/watch?v=Jg5BfmZqIiE
 
         private List<int> GezginSaticiProblemiCoz(double[,] mesafeMatrisi)
         {
