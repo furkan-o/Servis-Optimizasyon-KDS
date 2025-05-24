@@ -504,7 +504,7 @@ namespace ServisOptimizasyonSistemi
 
                 for (int i = 0; i < calisanSayisi; i++)
                 {
-                    adresler[i + 1] = calisanlar[i].YaklasikAdres + ", Ankara"; // Adres yazmayı bilmeyen çalışanlar için il verisini manüel ekle
+                    adresler[i + 1] = calisanlar[i].YaklasikAdres + ", İl bilgisi Ekle"; // Adres yazmayı bilmeyen çalışanlar için il verisini manüel ekle
                 }
 
                 // Süreyi azaltmak için adresleri küçük gruplara bölelim
