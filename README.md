@@ -1,5 +1,7 @@
 # Servis Optimizasyon Karar Destek Sistemi
 
+![Program](https://github.com/furkan-o/Servis-Optimizasyon-KDS/blob/main/Picture1.png?raw=true)
+
 Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uygun servis araç kombinasyonunu belirleyen bir karar destek sistemidir.
 
 ## Özellikler
