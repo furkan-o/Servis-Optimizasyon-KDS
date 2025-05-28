@@ -45,6 +45,7 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
 - `form1.cs` : Ana uygulama kodları ve algoritmalar.
 - `servisucretleri.json` : Servis araçlarının kilometre ve kapasite bazlı ücretleri.
    - `Yapısı:`
+```json
  {
     "kilometreAraligi": "10-20",
     "baslangicKm": 10,
@@ -55,9 +56,10 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
       "46": 3000
     }
   },
-
+```
 - `[bolge].json` : Her bölge için çalışan adresleri.
    - `Yapısı:`
+```json
 {
     "adSoyad": "Gordon Norman",
     "yaklasikAdres": "Hamidiye mah. Fatih cd."
@@ -66,7 +68,7 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
     "adSoyad": "Samuel Serif",
     "yaklasikAdres": "Seyrantepe mah. Bahar sk."
   },
-
+```
 ## Lisans
 
 Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
