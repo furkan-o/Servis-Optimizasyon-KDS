@@ -9,7 +9,7 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
 ## Özellikler
 
 - Çalışan adreslerini JSON dosyalarından okur.
-- Google Maps Distance Matrix API ile mesafe matrisi oluşturur.
+- OpenRouteService API ile mesafe matrisi oluşturur.
 - Genetik algoritma ile optimum servis rotası (Gezgin Satıcı Problemi) çözer.
 - Servis araçlarının kapasite ve kilometre bazlı ücretlerini dikkate alarak en uygun maliyetli kombinasyonu bulur.
 - Sonuçları Word veya metin dosyası olarak raporlayabilir.
