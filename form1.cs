@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -6,9 +6,11 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Xceed.Document.NET;
@@ -17,6 +19,46 @@ using Xceed.Words.NET;
 
 namespace ServisOptimizasyonSistemi
 {
+    #region ORS Model Sınıfları
+
+    public class OrsGeocodeResponse
+    {
+        [JsonPropertyName("features")]
+        public List<OrsFeature> Features { get; set; }
+    }
+
+    public class OrsFeature
+    {
+        [JsonPropertyName("geometry")]
+        public OrsGeometry Geometry { get; set; }
+    }
+
+    public class OrsGeometry
+    {
+        [JsonPropertyName("coordinates")]
+        public List<double> Coordinates { get; set; } // [boylam, enlem]
+    }
+
+    public class OrsMatrixRequest
+    {
+        [JsonPropertyName("locations")]
+        public List<List<double>> Locations { get; set; }
+
+        [JsonPropertyName("metrics")]
+        public List<string> Metrics { get; set; } = new List<string> { "distance" }; 
+
+        [JsonPropertyName("units")]
+        public string Units { get; set; } = "km"; 
+    }
+
+    public class OrsMatrixResponse
+    {
+        [JsonPropertyName("distances")]
+        public List<List<double?>> Distances { get; set; } // Ulaşılamayan rotalar için null olabilir
+    }
+
+    #endregion
+
     public partial class MainForm : Form
     {
         private List<string> bolgeler;
@@ -25,6 +67,7 @@ namespace ServisOptimizasyonSistemi
         private double[,] mesafeMatrisi;
         private List<int> optimumRota;
         private double toplamMesafe;
+        private Dictionary<string, List<ServisSecimi>> onbellek = new Dictionary<string, List<ServisSecimi>>(); 
 
         public MainForm()
         {
@@ -47,11 +90,11 @@ namespace ServisOptimizasyonSistemi
                 // Servis ücretlerini yükle
                 servisUcretleri = ServisUcretleriniOku();
 
-                lblDurum.Text = "Sistem hazır. Lütfen bir bölge seçin.";
+                lblDurum.Text = "Sistem hazır. Lütfen bir bölge seçiniz.";
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Sistem başlatılırken hata oluştu: {ex.Message}", "Hata",
+                MessageBox.Show($"Sistem başlatılırken bir hata oluştu: {ex.Message}", "Hata",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -59,24 +102,24 @@ namespace ServisOptimizasyonSistemi
         {
             if (cmbBolgeler.SelectedItem == null)
             {
-                MessageBox.Show("Lütfen bir bölge seçin.", "Uyarı",
+                MessageBox.Show("Lütfen bir bölge seçiniz.", "Uyarı",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             string seciliBolge = cmbBolgeler.SelectedItem.ToString();
             lblDurum.Text = $"{seciliBolge} bölgesi için optimizasyon yapılıyor...";
-            Application.DoEvents();
+            Application.DoEvents(); 
 
             try
             {
-                // Asenkron işlemleri çalıştırmak için bir Task başlat
+                // Asenkron işlemleri çalıştırmak için bir Görev (Task) başlat
                 Task.Run(async () =>
                 {
                     // Bölgedeki çalışanları oku
                     calisanlar = CalisanlariOku(seciliBolge);
 
-                    // UI thread'ine geri dön
+                    // UI thread'ine geri dönerek arayüzü güncelle
                     this.Invoke((MethodInvoker)delegate
                     {
                         lblCalisanSayisi.Text = calisanlar.Count.ToString();
@@ -89,7 +132,7 @@ namespace ServisOptimizasyonSistemi
                     });
 
                     // Mesafe matrisini hesapla
-                    mesafeMatrisi = await MesafeMatrisiHesapla(calisanlar);
+                    mesafeMatrisi = await MesafeMatrisiHesaplaAsync(calisanlar); 
 
                     this.Invoke((MethodInvoker)delegate
                     {
@@ -110,7 +153,7 @@ namespace ServisOptimizasyonSistemi
                     var enUygunSecim = EnUygunServisSeciminiYap(calisanlar.Count, new List<double> { toplamMesafe }, servisUcretleri);
 
                     // Servis sayısını belirle
-                    int toplamServis = enUygunSecim.Sum(s => s.ServisSayisi);
+                    int toplamServisSayisi = enUygunSecim.Sum(s => s.ServisSayisi);
 
                     // Kapasite listesi oluştur
                     List<int> kapasiteListesi = new List<int>();
@@ -124,25 +167,25 @@ namespace ServisOptimizasyonSistemi
 
                     this.Invoke((MethodInvoker)delegate
                     {
-                        lblDurum.Text = $"Toplam {toplamServis} servis için rota optimizasyonu yapılıyor...";
+                        lblDurum.Text = $"Toplam {toplamServisSayisi} servis için rota optimizasyonu yapılıyor...";
                     });
 
-                    // Çalışanların index listesini oluştur
-                    var calisanIndexList = Enumerable.Range(1, calisanlar.Count).ToList();
+                    // Çalışanların indeks listesini oluştur
+                    var calisanIndeksListesi = Enumerable.Range(1, calisanlar.Count).ToList();
                     List<List<int>> sonRotalar = new List<List<int>>();
                     List<double> servisMesafeleri = new List<double>();
 
                     // Kapasite sıralamasına göre personeli parça parça ayırıp rota çıkar
-                    int currentIndex = 0;
+                    int guncelIndeks = 0;
                     foreach (var kapasite in kapasiteListesi)
                     {
-                        if (currentIndex >= calisanIndexList.Count) break;
-                        int alinanMiktar = Math.Min(kapasite, calisanIndexList.Count - currentIndex);
-                        List<int> grup = calisanIndexList.GetRange(currentIndex, alinanMiktar);
-                        currentIndex += alinanMiktar;
+                        if (guncelIndeks >= calisanIndeksListesi.Count) break;
+                        int alinanMiktar = Math.Min(kapasite, calisanIndeksListesi.Count - guncelIndeks);
+                        List<int> grup = calisanIndeksListesi.GetRange(guncelIndeks, alinanMiktar);
+                        guncelIndeks += alinanMiktar;
 
                         // Bu grup için tek rota optimizasyonu
-                        var rota = OptimizeSingleRoute(grup, mesafeMatrisi);
+                        var rota = TekilRotaOptimizeEt(grup, mesafeMatrisi);
                         sonRotalar.Add(rota);
 
                         // Bu grup için mesafeyi hesapla
@@ -157,13 +200,13 @@ namespace ServisOptimizasyonSistemi
                         for (int i = 0; i < sonRotalar.Count; i++)
                         {
                             lstOptimumRota.Items.Add($"Servis {i + 1}");
-                            lstOptimumRota.Items.Add("Şirket");
+                            lstOptimumRota.Items.Add("Şirket"); // Başlangıç noktası
 
-                            foreach (var index in sonRotalar[i])
+                            foreach (var indeks in sonRotalar[i])
                             {
-                                if (index > 0 && index <= calisanlar.Count)
+                                if (indeks > 0 && indeks <= calisanlar.Count)
                                 {
-                                    lstOptimumRota.Items.Add(calisanlar[index - 1].AdSoyad);
+                                    lstOptimumRota.Items.Add(calisanlar[indeks - 1].AdSoyad);
                                 }
                             }
                             lstOptimumRota.Items.Add($"Mesafe: {servisMesafeleri[i]:N2} km");
@@ -181,26 +224,26 @@ namespace ServisOptimizasyonSistemi
                             dgvSonuclar.Rows.Clear();
                             foreach (var secenek in enUygunSecim)
                             {
-                                int rowIndex = dgvSonuclar.Rows.Add();
-                                dgvSonuclar.Rows[rowIndex].Cells["colServisTipi"].Value = $"{secenek.ServisTipi} kişilik";
-                                dgvSonuclar.Rows[rowIndex].Cells["colServisSayisi"].Value = secenek.ServisSayisi;
-                                dgvSonuclar.Rows[rowIndex].Cells["colKisiSayisi"].Value = secenek.TasinanKisiSayisi;
-                                dgvSonuclar.Rows[rowIndex].Cells["colBirimFiyat"].Value = secenek.BirimFiyat.ToString("C2");
-                                dgvSonuclar.Rows[rowIndex].Cells["colToplamFiyat"].Value = secenek.ToplamFiyat.ToString("C2");
+                                int satirIndeksi = dgvSonuclar.Rows.Add();
+                                dgvSonuclar.Rows[satirIndeksi].Cells["colServisTipi"].Value = $"{secenek.ServisTipi} kişilik";
+                                dgvSonuclar.Rows[satirIndeksi].Cells["colServisSayisi"].Value = secenek.ServisSayisi;
+                                dgvSonuclar.Rows[satirIndeksi].Cells["colKisiSayisi"].Value = secenek.TasinanKisiSayisi;
+                                dgvSonuclar.Rows[satirIndeksi].Cells["colBirimFiyat"].Value = secenek.BirimFiyat.ToString("C2");
+                                dgvSonuclar.Rows[satirIndeksi].Cells["colToplamFiyat"].Value = secenek.ToplamFiyat.ToString("C2");
                             }
 
                             double toplamMaliyet = enUygunSecim.Sum(s => s.ToplamFiyat);
                             lblToplamMaliyet.Text = toplamMaliyet.ToString("C2");
 
                             lblDurum.Text = "Optimizasyon tamamlandı.";
-                            tabControl1.SelectedIndex = 2; // Sonuçlar tabına geç
+                            tabControl1.SelectedIndex = 2; // Sonuçlar sekmesine geç
                         });
                     }
                     catch (Exception ex)
                     {
                         this.Invoke((MethodInvoker)delegate
                         {
-                            MessageBox.Show($"Servis seçimi sırasında hata oluştu: {ex.Message}", "Hata",
+                            MessageBox.Show($"Servis seçimi sırasında bir hata oluştu: {ex.Message}", "Hata",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error);
                             lblDurum.Text = "Hata oluştu.";
                         });
@@ -209,189 +252,182 @@ namespace ServisOptimizasyonSistemi
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Optimizasyon sırasında hata oluştu: {ex.Message}", "Hata",
+                MessageBox.Show($"Optimizasyon sırasında bir hata oluştu: {ex.Message}", "Hata",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 lblDurum.Text = "Hata oluştu.";
             }
         }
 
 
-        /// Basic Gezgin Satıcı (KM problemi için gerekli)
-        private List<int> OptimizeSingleRoute(List<int> subIndices, double[,] mesafeMatrisi)
+        /// Temel Gezgin Satıcı Problemi için rota optimizasyonu yapar
+        private List<int> TekilRotaOptimizeEt(List<int> altIndeksler, double[,] anaMesafeMatrisi)
         {
-            // Yerel matrisi oluşturmak için bir eşleme yapar
-            Dictionary<int, int> mapToLocal = new Dictionary<int, int>();
-            for (int i = 0; i < subIndices.Count; i++)
+            // Yerel matrisi oluşturmak için bir haritalama yapar
+            Dictionary<int, int> yerelHarita = new Dictionary<int, int>();
+            for (int i = 0; i < altIndeksler.Count; i++)
             {
-                mapToLocal[subIndices[i]] = i + 1;
+                yerelHarita[altIndeksler[i]] = i + 1; // 1-tabanlı indeksleme
             }
 
-            // Şirket dahil olmak üzere yerel indexleri al
-            int k = subIndices.Count;
-            double[,] localMatrix = new double[k + 1, k + 1];
+            // Şirket (0. indeks) dahil olmak üzere yerel indeks sayısını al
+            int altGrupBoyutu = altIndeksler.Count;
+            double[,] yerelMatris = new double[altGrupBoyutu + 1, altGrupBoyutu + 1];
 
             // Yerel matrisi doldur
-            for (int i = 0; i <= k; i++)
+            for (int i = 0; i <= altGrupBoyutu; i++)
             {
-                for (int j = 0; j <= k; j++)
+                for (int j = 0; j <= altGrupBoyutu; j++)
                 {
                     if (i == j)
                     {
-                        localMatrix[i, j] = 0;
+                        yerelMatris[i, j] = 0;
                         continue;
                     }
 
-                    if (i == 0)
+                    if (i == 0) // Şirketten çalışana
                     {
-
-                        // büyük GSP j => altgrup[j-1]
-                        int globalJ = subIndices[j - 1];
-                        localMatrix[i, j] = mesafeMatrisi[0, globalJ];
+                        int genelJIndeksi = altIndeksler[j - 1]; // j yerel indeksi (1-tabanlı)
+                        yerelMatris[i, j] = anaMesafeMatrisi[0, genelJIndeksi];
                     }
-                    else if (j == 0)
+                    else if (j == 0) // Çalışandan şirkete
                     {
-                        // yerel i => altgrup[i-1]
-                        int globalI = subIndices[i - 1];
-                        localMatrix[i, j] = mesafeMatrisi[globalI, 0];
+                        int genelIIndeksi = altIndeksler[i - 1]; // i yerel indeksi (1-tabanlı)
+                        yerelMatris[i, j] = anaMesafeMatrisi[genelIIndeksi, 0];
                     }
-                    else
+                    else // Çalışandan çalışana
                     {
-                        // yerel i => altgrup[i-1], yerel j => altgrup[j-1]
-                        int globalI = subIndices[i - 1];
-                        int globalJ = subIndices[j - 1];
-                        localMatrix[i, j] = mesafeMatrisi[globalI, globalJ];
+                        int genelIIndeksi = altIndeksler[i - 1];
+                        int genelJIndeksi = altIndeksler[j - 1];
+                        yerelMatris[i, j] = anaMesafeMatrisi[genelIIndeksi, genelJIndeksi];
                     }
                 }
             }
 
-            // Tek vasıtalı gezgin satıcı problemi çöz
-            var routeLocal = RunSingleTSP(localMatrix, k);
+            // Tek araçlı gezgin satıcı problemini çöz
+            var yerelRota = TekilGezginSaticiProblemiCalistir(yerelMatris, altGrupBoyutu);
 
-            // Yerel rotayı global rotaya dönüştür
-            // routeLocal yerel indexler olarak döner (1..k)
-            // global index olarak dönüştürmek için subIndices[localIndex-1] kullan
-            List<int> finalRoute = new List<int>();
-            foreach (var localIndex in routeLocal)
+            // Yerel rotayı genel ana rotaya dönüştür
+            // yerelRota, yerel indeksler (1..altGrupBoyutu) olarak döner
+            // Genel indekslere dönüştürmek için altIndeksler[yerelIndeks-1] kullanılır
+            List<int> nihaiRota = new List<int>();
+            foreach (var yerelIndeks in yerelRota)
             {
-                // localIndex=1..k => subIndices[localIndex-1]
-                finalRoute.Add(subIndices[localIndex - 1]);
+                // yerelIndeks=1..altGrupBoyutu => altIndeksler[yerelIndeks-1]
+                nihaiRota.Add(altIndeksler[yerelIndeks - 1]);
             }
-
-            return finalRoute;
+            return nihaiRota;
         }
 
 
-        /// Tekil Gezgin Satıcı Problemi çözümü için çalışan fonksiyon.
-        private List<int> RunSingleTSP(double[,] localMatrix, int boyut)
+        /// Tekil Gezgin Satıcı Problemi (TSP) çözümü için genetik algoritmayı çalıştıran fonksiyon.
+        private List<int> TekilGezginSaticiProblemiCalistir(double[,] yerelMatris, int boyut)
         {
             // Genetik algoritma parametreleri
-            int populasyonBuyuklugu = 150;
-            int jenerasyonSayisi = 300;
-            double caprazlamaSiklik = 1.9;
-            double mutasyonSiklik = 1.3;
+            int populasyonBuyuklugu = 250;
+            int jenerasyonSayisi = 500;
+            double caprazlamaOrani = 0.9;
+            double mutasyonOrani = 0.1; 
+            double elitizmOrani = 0.05;
 
             // Başlangıç populasyonunu oluştur
             List<List<int>> populasyon = new List<List<int>>();
-            Random rnd = new Random();
+            Random rastgele = new Random();
 
             for (int i = 0; i < populasyonBuyuklugu; i++)
             {
-                // Rastgele bir rota oluştur (1'den boyuta kadar)
+                // Rastgele bir rota oluştur (1'den boyuta kadar olan sayılarla)
                 List<int> rota = Enumerable.Range(1, boyut).ToList();
 
-                // Karıştır
+                // Rotayı karıştır (Fisher-Yates shuffle)
                 for (int j = 0; j < boyut; j++)
                 {
-                    int k = rnd.Next(j, boyut);
-                    int temp = rota[j];
+                    int k = rastgele.Next(j, boyut);
+                    int gecici = rota[j];
                     rota[j] = rota[k];
-                    rota[k] = temp;
+                    rota[k] = gecici;
                 }
-
                 populasyon.Add(rota);
             }
 
             // Jenerasyonları çalıştır
-            for (int jenerasyon = 0; jenerasyon < jenerasyonSayisi; jenerasyon++)
+            for (int jenerasyonNo = 0; jenerasyonNo < jenerasyonSayisi; jenerasyonNo++)
             {
-                // Uygunluk değerlerini hesapla
-                Dictionary<int, double> fitnessMap = new Dictionary<int, double>();
-
+                // Her bireyin uygunluk değerini hesapla
+                Dictionary<int, double> uygunlukHaritasi = new Dictionary<int, double>();
                 for (int i = 0; i < populasyon.Count; i++)
                 {
-                    double mesafe = RotaMesafesiHesaplaLocal(populasyon[i], localMatrix);
-                    fitnessMap[i] = (mesafe <= 0) ? 0.0 : 1.0 / mesafe;
+                    double mesafe = RotaMesafesiHesaplaLocal(populasyon[i], yerelMatris);
+                    uygunlukHaritasi[i] = (mesafe <= 0) ? 0.0 : 1.0 / mesafe; // Mesafe ne kadar küçükse uygunluk o kadar büyük
                 }
 
-                // Yeni populasyon oluştur
                 List<List<int>> yeniPopulasyon = new List<List<int>>();
 
-                // En iyi çözümü doğrudan aktar
-                int enIyiIndeks = fitnessMap.OrderByDescending(x => x.Value).First().Key;
-                yeniPopulasyon.Add(new List<int>(populasyon[enIyiIndeks]));
-
-                // Yeni bireyleri oluştur
-                while (yeniPopulasyon.Count < populasyonBuyuklugu)
+                // En iyi bireyleri doğrudan yeni populasyona aktar
+                int elitSayisi = (int)(populasyonBuyuklugu * elitizmOrani);
+                if (elitSayisi > 0 && uygunlukHaritasi.Any())
                 {
-                    // Çaprazlama
-                    if (rnd.NextDouble() < caprazlamaSiklik)
-                    {
-                        // Turnuva seçimi ile iki parent seç
-                        int ebeveyn1 = TurnuvaSecimi(fitnessMap, rnd);
-                        int ebeveyn2 = TurnuvaSecimi(fitnessMap, rnd);
-
-                        // Çaprazlama yap
-                        var cocuk = Caprazla(populasyon[ebeveyn1], populasyon[ebeveyn2], rnd);
-
-                        // Child mutasyon
-                        if (rnd.NextDouble() < mutasyonSiklik)
-                        {
-                            Mutasyon(cocuk, rnd);
-                        }
-
-                        yeniPopulasyon.Add(cocuk);
-                    }
-                    else
-                    {
-                        int secilen = TurnuvaSecimi(fitnessMap, rnd);
-                        var klon = new List<int>(populasyon[secilen]);
-                        if (rnd.NextDouble() < mutasyonSiklik)
-                        {
-                            Mutasyon(klon, rnd);
-                        }
-                        yeniPopulasyon.Add(klon);
-                    }
+                    var enIyiBireyler = uygunlukHaritasi.OrderByDescending(x => x.Value)
+                                                 .Take(elitSayisi)
+                                                 .Select(x => new List<int>(populasyon[x.Key]));
+                    yeniPopulasyon.AddRange(enIyiBireyler);
                 }
 
-                // Populasyonu güncelle
-                populasyon = yeniPopulasyon;
+                // Yeni populasyonun geri kalanını doldur
+                while (yeniPopulasyon.Count < populasyonBuyuklugu)
+                {
+                    // Ebeveyn seçimi (Turnuva Seçimi)
+                    int ebeveyn1Indeks = TurnuvaSecimi(uygunlukHaritasi, rastgele, populasyon);
+                    int ebeveyn2Indeks = TurnuvaSecimi(uygunlukHaritasi, rastgele, populasyon);
+
+                    List<int> cocuk;
+                    // Çaprazlama
+                    if (rastgele.NextDouble() < caprazlamaOrani && boyut > 1)
+                    {
+                        cocuk = Caprazla(new List<int>(populasyon[ebeveyn1Indeks]), new List<int>(populasyon[ebeveyn2Indeks]), rastgele);
+                    }
+                    else // Çaprazlama yapılmazsa daha iyi olan ebeveyni al
+                    {
+                        cocuk = new List<int>(uygunlukHaritasi[ebeveyn1Indeks] > uygunlukHaritasi[ebeveyn2Indeks] ? populasyon[ebeveyn1Indeks] : populasyon[ebeveyn2Indeks]);
+                    }
+
+                    // Mutasyon
+                    if (rastgele.NextDouble() < mutasyonOrani && boyut > 1)
+                    {
+                        MutasyonUygula(cocuk, rastgele);
+                    }
+                    yeniPopulasyon.Add(cocuk);
+                }
+                populasyon = yeniPopulasyon; // Eski populasyonu yenisiyle değiştir
             }
 
-            // En iyi rotayı bul
-            Dictionary<int, double> sonFitnessMap = new Dictionary<int, double>();
+            // Son populasyondaki en iyi bireyi bul
+            Dictionary<int, double> sonUygunlukHaritasi = new Dictionary<int, double>();
             for (int i = 0; i < populasyon.Count; i++)
             {
-                double mesafe = RotaMesafesiHesaplaLocal(populasyon[i], localMatrix);
-                sonFitnessMap[i] = mesafe;
+                double mesafe = RotaMesafesiHesaplaLocal(populasyon[i], yerelMatris);
+                sonUygunlukHaritasi[i] = mesafe;
             }
 
-            int enIyiSonIndeks = sonFitnessMap.OrderBy(x => x.Value).First().Key;
+            if (!sonUygunlukHaritasi.Any()) return new List<int>(); // Uygun birey yoksa boş liste döndür
+
+            int enIyiSonIndeks = sonUygunlukHaritasi.OrderBy(x => x.Value).First().Key;
             return populasyon[enIyiSonIndeks];
         }
 
 
-        /// Yerel oluşturulan 2. matrisi kullanarak mesafeyi hesaplar.
-        private double RotaMesafesiHesaplaLocal(List<int> rota, double[,] localMatrix)
+        private double RotaMesafesiHesaplaLocal(List<int> rota, double[,] yerelMatris)
         {
-            double toplam = 0;
-            // Şirketten başla
-            toplam += localMatrix[0, rota[0]];
-            // Rotayı takip et
+            double toplamMesafe = 0;
+            if (rota == null || rota.Count == 0) return double.MaxValue;
+
+            // Rota başlangıç noktasından (şirket, indeks 0) ilk durağa olan mesafeyi ekle
+            toplamMesafe += yerelMatris[0, rota[0]];
+            // Duraklar arası mesafeleri ekle
             for (int i = 0; i < rota.Count - 1; i++)
             {
-                toplam += localMatrix[rota[i], rota[i + 1]];
+                toplamMesafe += yerelMatris[rota[i], rota[i + 1]];
             }
-            return toplam;
+            return toplamMesafe;
         }
 
 
@@ -404,15 +440,15 @@ namespace ServisOptimizasyonSistemi
                 return;
             }
 
-            SaveFileDialog saveDialog = new SaveFileDialog();
-            saveDialog.Filter = "Word Dosyası|*.docx|Metin Dosyası|*.txt";
-            saveDialog.Title = "Raporu Kaydet";
+            SaveFileDialog kaydetDialogu = new SaveFileDialog();
+            kaydetDialogu.Filter = "Word Dosyası|*.docx|Metin Dosyası|*.txt";
+            kaydetDialogu.Title = "Raporu Kaydet";
 
-            if (saveDialog.ShowDialog() == DialogResult.OK)
+            if (kaydetDialogu.ShowDialog() == DialogResult.OK)
             {
                 try
                 {
-                    string dosyaYolu = saveDialog.FileName;
+                    string dosyaYolu = kaydetDialogu.FileName;
                     string uzanti = Path.GetExtension(dosyaYolu).ToLower();
 
                     switch (uzanti)
@@ -424,13 +460,10 @@ namespace ServisOptimizasyonSistemi
                             RaporuMetinOlarakKaydet(dosyaYolu);
                             break;
                     }
-
-                    MessageBox.Show($"Rapor başarıyla kaydedildi: {dosyaYolu}", "Bilgi",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Rapor oluşturulurken hata oluştu: {ex.Message}", "Hata",
+                    MessageBox.Show($"Rapor oluşturulurken bir hata oluştu: {ex.Message}", "Hata",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
@@ -440,464 +473,651 @@ namespace ServisOptimizasyonSistemi
 
         private List<string> BolgeleriGetir()
         {
-            // Kök dizindeki tüm json dosyalarını bul ve bölge adlarını çıkar
+            // Çalışma dizinindeki ".json" uzantılı dosyaları al, "servisucretleri.json" hariç
             return Directory.GetFiles(".", "*.json")
                 .Where(dosya => !Path.GetFileName(dosya).Equals("servisucretleri.json", StringComparison.OrdinalIgnoreCase))
-                .Select(dosya => Path.GetFileNameWithoutExtension(dosya))
+                .Select(dosya => Path.GetFileNameWithoutExtension(dosya)) 
                 .ToList();
         }
 
-        private List<Calisan> CalisanlariOku(string bolge)
+        private List<Calisan> CalisanlariOku(string bolgeAdi)
         {
-            string dosyaYolu = $"{bolge}.json";
+            string dosyaYolu = $"{bolgeAdi}.json";
             string jsonIcerik = File.ReadAllText(dosyaYolu);
-
-            var calisanlar = JsonSerializer.Deserialize<List<Calisan>>(jsonIcerik,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-            return calisanlar;
+            return JsonSerializer.Deserialize<List<Calisan>>(jsonIcerik,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); 
         }
 
         private Dictionary<string, List<ServisUcret>> ServisUcretleriniOku()
         {
             string dosyaYolu = "servisucretleri.json";
             string jsonIcerik = File.ReadAllText(dosyaYolu);
-
-            var servisUcretleri = JsonSerializer.Deserialize<List<KilometreGrubu>>(jsonIcerik,
+            var kilometreGruplari = JsonSerializer.Deserialize<List<KilometreGrubu>>(jsonIcerik,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            // Kilometre grubu başlangıç ve bitiş değerlerine göre grupla
             var ucretSozlugu = new Dictionary<string, List<ServisUcret>>();
-
-            foreach (var grup in servisUcretleri)
+            foreach (var grup in kilometreGruplari)
             {
-                string grupAdi = $"{grup.BaslangicKm}-{grup.BitisKm}";
+                string grupAdi = $"{grup.BaslangicKm}-{grup.BitisKm}"; 
                 var ucretler = new List<ServisUcret>
                 {
                     new ServisUcret { Kapasite = 19, Ucret = grup.ServisUcretleri._19 },
                     new ServisUcret { Kapasite = 27, Ucret = grup.ServisUcretleri._27 },
                     new ServisUcret { Kapasite = 46, Ucret = grup.ServisUcretleri._46 }
                 };
-
                 ucretSozlugu.Add(grupAdi, ucretler);
             }
-
             return ucretSozlugu;
         }
 
         #endregion
 
-        #region Mesafe Matrisi İşlemleri
+        #region Mesafe Matrisi İşlemleri (OpenRouteService ile)
 
-        private async Task<double[,]> MesafeMatrisiHesapla(List<Calisan> calisanlar)
+        private async Task<List<double>> AdresIcinKoordinatAlAsync(string adres, string orsApiAnahtari, HttpClient istemci)
         {
-            int calisanSayisi = calisanlar.Count;
-            double[,] mesafeMatrisi = new double[calisanSayisi + 1, calisanSayisi + 1];
-
-            using (HttpClient client = new HttpClient())
+            string jeokodlamaUrl = $"https://api.openrouteservice.org/geocode/search?api_key={orsApiAnahtari}&text={Uri.EscapeDataString(adres)}&size=1";
+            try
             {
-                string apiKey = "API BURAYA";
-
-                // Tüm adresleri bir diziye koy (0: şirket, 1-n: çalışanlar)
-                string[] adresler = new string[calisanSayisi + 1];
-                adresler[0] = "ŞİRKET ADRESİ"; // Şirket adresi
-
-                for (int i = 0; i < calisanSayisi; i++)
+                HttpResponseMessage yanit = await istemci.GetAsync(jeokodlamaUrl);
+                if (yanit.IsSuccessStatusCode)
                 {
-                    adresler[i + 1] = calisanlar[i].YaklasikAdres + ", İl bilgisi Ekle"; // Çalışanların il verisini manüel ekle
-                }
-
-                // Süreyi azaltmak için adresleri küçük gruplara bölelim
-                int batchSize = 10; // 10 lu gruplar halinde istek yap
-                List<Task> tasks = new List<Task>();
-
-                for (int i = 0; i < adresler.Length; i += batchSize)
-                {
-                    for (int j = 0; j < adresler.Length; j += batchSize)
+                    var jeokodlamaYaniti = await yanit.Content.ReadFromJsonAsync<OrsGeocodeResponse>();
+                    if (jeokodlamaYaniti != null && jeokodlamaYaniti.Features != null && jeokodlamaYaniti.Features.Count > 0)
                     {
-                        int startI = i;
-                        int endI = Math.Min(i + batchSize, adresler.Length);
-                        int startJ = j;
-                        int endJ = Math.Min(j + batchSize, adresler.Length);
-
-                        tasks.Add(Task.Run(async () =>
-                        {
-                            string origins = string.Join("|", adresler[startI..endI].Select(Uri.EscapeDataString));
-                            string destinations = string.Join("|", adresler[startJ..endJ].Select(Uri.EscapeDataString));
-                            string url = $"https://maps.googleapis.com/maps/api/distancematrix/json?origins={origins}&destinations={destinations}&key={apiKey}";
-
-                            try
-                            {
-                                HttpResponseMessage response = await client.GetAsync(url);
-                                if (response.IsSuccessStatusCode)
-                                {
-                                    var distanceResponse = await response.Content.ReadFromJsonAsync<GoogleDistanceMatrixResponse>();
-                                    if (distanceResponse != null && distanceResponse.status == "OK")
-                                    {
-                                        for (int x = 0; x < distanceResponse.rows.Count; x++)
-                                        {
-                                            for (int y = 0; y < distanceResponse.rows[x].elements.Count; y++)
-                                            {
-                                                var element = distanceResponse.rows[x].elements[y];
-                                                if (element.status == "OK")
-                                                {
-                                                    mesafeMatrisi[startI + x, startJ + y] = element.distance.value / 1000.0; // Google tarafından metre olarak döndürülen mesafeyi kilometreye çevir
-                                                }
-                                                else
-                                                {
-                                                    mesafeMatrisi[startI + x, startJ + y] = double.MaxValue; // Yükseltilmiş bir değer kullanarak bir hatayı göster
-                                                }
-                                            }
-                                        }
-                                    }
-                                    else
-                                    {
-                                        this.Invoke((MethodInvoker)delegate
-                                        {
-                                            MessageBox.Show("Mesafe hesaplanırken hata oluştu: Geçersiz yanıt", "Hata",
-                                                MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                        });
-                                    }
-                                }
-                                else
-                                {
-                                    this.Invoke((MethodInvoker)delegate
-                                    {
-                                        MessageBox.Show($"Mesafe hesaplanırken hata oluştu: {response.ReasonPhrase}", "Hata",
-                                            MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                    });
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                this.Invoke((MethodInvoker)delegate
-                                {
-                                    MessageBox.Show($"Mesafe hesaplanırken hata oluştu: {ex.Message}", "Hata",
-                                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                });
-                            }
-                        }));
+                        return jeokodlamaYaniti.Features[0].Geometry.Coordinates;
                     }
                 }
-
-                await Task.WhenAll(tasks);
+                else
+                {
+                    Console.WriteLine($"'{adres}' için jeokodlama başarısız oldu: {yanit.StatusCode} - {await yanit.Content.ReadAsStringAsync()}");
+                }
             }
-
-            return mesafeMatrisi;
+            catch (Exception ex)
+            {
+                Console.WriteLine($"'{adres}' için jeokodlama istisnası: {ex.Message}");
+            }
+            return null; 
         }
 
+        private async Task<double[,]> MesafeMatrisiHesaplaAsync(List<Calisan> calisanListesi) 
+        {
+            int calisanSayisi = calisanListesi.Count;
+            // Matris boyutu: şirket (0. indeks) + çalışan sayısı
+            double[,] hesaplananMesafeMatrisi = new double[calisanSayisi + 1, calisanSayisi + 1];
+
+            // OpenRouteService API Anahtarı (Kendi anahtarınızla değiştir)
+            string orsApiAnahtari = "API BURAYA";
+
+
+            using (HttpClient istemci = new HttpClient())
+            {
+                istemci.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                istemci.DefaultRequestHeaders.UserAgent.ParseAdd("ServisOptimizasyonSistemi/1.0"); 
+
+                List<string> tumAdresler = new List<string>
+                {
+                    // Şirket adresi (0. indeks)
+                    "ŞİRKET ADRESİ"
+                };
+                foreach (var calisan in calisanListesi)
+                {
+                    tumAdresler.Add(calisan.YaklasikAdres + ", İl bilgisi Ekle"); // Adres yazmayı bilmeyen çalışanlar için il verisini manüel ekle
+                }
+
+                List<List<double>> konumKoordinatlari = new List<List<double>>();
+                this.Invoke((MethodInvoker)delegate { lblDurum.Text = "Adresler koordinatlara çevriliyor..."; });
+
+                for (int i = 0; i < tumAdresler.Count; i++)
+                {
+                    this.Invoke((MethodInvoker)delegate { lblDurum.Text = $"Koordinat alınıyor: {i + 1}/{tumAdresler.Count}..."; });
+                    List<double> koordinatlar = await AdresIcinKoordinatAlAsync(tumAdresler[i], orsApiAnahtari, istemci);
+                    if (koordinatlar != null)
+                    {
+                        konumKoordinatlari.Add(koordinatlar);
+                    }
+                    else
+                    {
+                        // Bir adres için jeokodlama hatasını işle:
+                        // Seçenek 1: Hata göster ve durdur.
+                        // Seçenek 2: Bu adresi içeren rotalar için çok büyük bir mesafe kullan.
+                        // Seçenek 3: Bu adresi atla (calisanlar listesini ve indeksleri ayarlamayı gerektirebilir).
+                        this.Invoke((MethodInvoker)delegate
+                        {
+                            MessageBox.Show($"'{tumAdresler[i]}' adresi için koordinat bulunamadı. Bu adres optimizasyon dışı kalabilir veya hatalara yol açabilir.", "Jeokodlama Hatası", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        });
+                        // Basitlik için, muhtemelen sorunlara yol açacak veya daha sonra MaxValue ile işlenecek bir yer tutucu
+                        // Daha sağlam bir çözüm, bu konumu kullanılamaz olarak işaretlemek olacaktır.
+                        konumKoordinatlari.Add(new List<double> { 0, 0 }); // Geçersiz yer tutucu
+                    }
+                    // ORS ücretsiz katman hız sınırı 
+                    await Task.Delay(250);
+                }
+
+                // Başarısız jeokodlama için temel kontrol
+                if (konumKoordinatlari.Count != tumAdresler.Count || konumKoordinatlari.Any(k => k[0] == 0 && k[1] == 0 && !tumAdresler[konumKoordinatlari.IndexOf(k)].Contains("0,0")))
+                {
+                    this.Invoke((MethodInvoker)delegate
+                    {
+                        MessageBox.Show($"Tüm adresler için koordinat alınamadı. Mesafe matrisi hesaplanamıyor.", "Kritik Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        lblDurum.Text = "Koordinat hatası. İşlem durduruldu.";
+                    });
+                    return hesaplananMesafeMatrisi; 
+                }
+
+                if (konumKoordinatlari.Count > 50)
+                {
+                    this.Invoke((MethodInvoker)delegate
+                    {
+                        MessageBox.Show("OpenRouteService ücretsiz planı en fazla 50 konumu destekler. Mevcut konum sayısı: " + konumKoordinatlari.Count, "API Sınırı Aşıldı", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        lblDurum.Text = "API sınırı aşıldı.";
+                    });
+                    // Başarısızlığı veya kısmi veriyi belirtmek için MaxValue ile başlat
+                    for (int i = 0; i < hesaplananMesafeMatrisi.GetLength(0); i++)
+                        for (int j = 0; j < hesaplananMesafeMatrisi.GetLength(1); j++)
+                            hesaplananMesafeMatrisi[i, j] = (i == j) ? 0 : double.MaxValue;
+                    return hesaplananMesafeMatrisi;
+                }
+
+                this.Invoke((MethodInvoker)delegate { lblDurum.Text = "Mesafe matrisi OpenRouteService'den alınıyor..."; });
+
+                OrsMatrixRequest matrisIstekVerisi = new OrsMatrixRequest
+                {
+                    Locations = konumKoordinatlari 
+                };
+
+                string matrisApiUrl = "https://api.openrouteservice.org/v2/matrix/driving-car";
+                HttpContent icerik = new StringContent(JsonSerializer.Serialize(matrisIstekVerisi), Encoding.UTF8, "application/json");
+                istemci.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(orsApiAnahtari); // API anahtarını yetkilendirme başlığına ekle
+
+                try
+                {
+                    HttpResponseMessage matrisYanitMesaji = await istemci.PostAsync(matrisApiUrl, icerik);
+
+                    if (matrisYanitMesaji.IsSuccessStatusCode)
+                    {
+                        var orsMatrisYaniti = await matrisYanitMesaji.Content.ReadFromJsonAsync<OrsMatrixResponse>();
+                        if (orsMatrisYaniti != null && orsMatrisYaniti.Distances != null)
+                        {
+                            for (int i = 0; i < orsMatrisYaniti.Distances.Count; i++)
+                            {
+                                for (int j = 0; j < orsMatrisYaniti.Distances[i].Count; j++)
+                                {
+                                    if (i < hesaplananMesafeMatrisi.GetLength(0) && j < hesaplananMesafeMatrisi.GetLength(1))
+                                    {
+                                        // Ulaşılamayan rotalar için null gelebilir, bu durumda MaxValue ata
+                                        hesaplananMesafeMatrisi[i, j] = orsMatrisYaniti.Distances[i][j] ?? double.MaxValue;
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            this.Invoke((MethodInvoker)delegate { MessageBox.Show("ORS Matris API'sinden geçersiz yanıt.", "API Hatası", MessageBoxButtons.OK, MessageBoxIcon.Error); });
+                        }
+                    }
+                    else
+                    {
+                        string hataIcerigi = await matrisYanitMesaji.Content.ReadAsStringAsync();
+                        this.Invoke((MethodInvoker)delegate { MessageBox.Show($"ORS Matris API hatası: {matrisYanitMesaji.StatusCode} - {hataIcerigi}", "API Hatası", MessageBoxButtons.OK, MessageBoxIcon.Error); });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.Invoke((MethodInvoker)delegate { MessageBox.Show($"Mesafe matrisi alınırken bir hata oluştu: {ex.Message}", "Hata", MessageBoxButtons.OK, MessageBoxIcon.Error); });
+                }
+            }
+            this.Invoke((MethodInvoker)delegate { lblDurum.Text = "Mesafe matrisi hesaplandı."; });
+            return hesaplananMesafeMatrisi;
+        }
         #endregion
 
         #region Genetik Algoritma İşlemleri
-        //Muzaffer Kapanoglu Mutasyon Operatorleri https://www.youtube.com/watch?v=3mLE8TsyWPs
-        //Genetik Gösterimler Gezgin Satıcı Problemi https://www.youtube.com/watch?v=Jg5BfmZqIiE
 
-        private List<int> GezginSaticiProblemiCoz(double[,] mesafeMatrisi)
+        private bool RotaGecerliMi(List<int> rota, int kapasite)
         {
-            int boyut = mesafeMatrisi.GetLength(0) - 1; // Şirket hariç nokta sayısı
+            int rotadakiToplamCalisanSayisi = rota.Count;
+            return rotadakiToplamCalisanSayisi <= kapasite;
+        }
 
-            // Genetik algoritma parametreleri
-            int populasyonBuyuklugu = 150;
-            int jenerasyonSayisi = 300;
-            double caprazlamaSiklik = 1.9;
-            double mutasyonSiklik = 1.3;
+        private List<int> GezginSaticiProblemiCoz(double[,] anaMesafeMatrisi) 
+        {
+            int boyut = anaMesafeMatrisi.GetLength(0) - 1; // Şirket hariç durak sayısı
+            if (boyut <= 0) return new List<int>();
+
+            int populasyonBuyuklugu = 200;
+            int jenerasyonSayisi = 500;
+            double caprazlamaOrani = 0.9;
+            double mutasyonOrani = 0.15;
+            double elitizmOrani = 0.05;
+
+            List<List<int>> populasyon = new List<List<int>>();
+            Random rastgele = new Random();
 
             // Başlangıç populasyonunu oluştur
-            List<List<int>> populasyon = new List<List<int>>();
-            Random rnd = new Random();
-
             for (int i = 0; i < populasyonBuyuklugu; i++)
             {
-                // Rastgele bir rota oluştur (1'den boyuta kadar)
-                List<int> rota = Enumerable.Range(1, boyut).ToList();
-
-                // Karıştır
-                for (int j = 0; j < boyut; j++)
+                List<int> rota = Enumerable.Range(1, boyut).ToList(); // 1'den boyuta kadar (çalışan indeksleri)
+                // Rotayı karıştır
+                for (int j = rota.Count - 1; j > 0; j--)
                 {
-                    int k = rnd.Next(j, boyut);
-                    int temp = rota[j];
-                    rota[j] = rota[k];
-                    rota[k] = temp;
+                    int k = rastgele.Next(j + 1);
+                    (rota[j], rota[k]) = (rota[k], rota[j]); // Değiş tokuş
                 }
-
                 populasyon.Add(rota);
             }
 
             // Jenerasyonları çalıştır
-            for (int jenerasyon = 0; jenerasyon < jenerasyonSayisi; jenerasyon++)
+            for (int jenerasyonNo = 0; jenerasyonNo < jenerasyonSayisi; jenerasyonNo++)
             {
-                // Uygunluk değerlerini hesapla
-                Dictionary<int, double> fitnessMap = new Dictionary<int, double>();
-
+                Dictionary<int, double> uygunlukHaritasi = new Dictionary<int, double>();
                 for (int i = 0; i < populasyon.Count; i++)
                 {
-                    double mesafe = RotaMesafesiHesapla(populasyon[i], mesafeMatrisi);
-                    fitnessMap[i] = 1.0 / mesafe; // Mesafe ne kadar küçükse uygunluk o kadar büyük
+                    double mesafe = RotaMesafesiHesapla(populasyon[i], anaMesafeMatrisi);
+                    // Mesafe 0 veya geçersizse uygunluk 0, aksi halde 1/mesafe
+                    uygunlukHaritasi[i] = (mesafe <= 0 || double.IsInfinity(mesafe) || double.IsNaN(mesafe) || mesafe == double.MaxValue) ? 0.0 : 1.0 / mesafe;
                 }
 
-                // Yeni populasyon oluştur
                 List<List<int>> yeniPopulasyon = new List<List<int>>();
+                int elitSayisi = (int)(populasyonBuyuklugu * elitizmOrani);
 
-                // En iyi çözümü doğrudan aktar
-                int enIyiIndeks = fitnessMap.OrderByDescending(x => x.Value).First().Key;
-                yeniPopulasyon.Add(new List<int>(populasyon[enIyiIndeks]));
+                // Elitizm
+                if (elitSayisi > 0 && uygunlukHaritasi.Any())
+                {
+                    var enIyiBireyler = uygunlukHaritasi.OrderByDescending(x => x.Value)
+                                             .Take(elitSayisi)
+                                             .Select(x => new List<int>(populasyon[x.Key])); // Kopyala
+                    yeniPopulasyon.AddRange(enIyiBireyler);
+                }
 
-                // Yeni bireyleri oluştur
+                // Yeni populasyonun geri kalanını doldur
                 while (yeniPopulasyon.Count < populasyonBuyuklugu)
                 {
-                    // Çaprazlama yapılacak mı?
-                    if (rnd.NextDouble() < caprazlamaSiklik)
+                    int ebeveyn1Indeks = TurnuvaSecimi(uygunlukHaritasi, rastgele, populasyon);
+                    int ebeveyn2Indeks = TurnuvaSecimi(uygunlukHaritasi, rastgele, populasyon);
+
+                    List<int> cocuk;
+                    if (rastgele.NextDouble() < caprazlamaOrani && boyut > 1)
                     {
-                        // Turnuva seçimi ile iki parent seç
-                        int ebeveyn1 = TurnuvaSecimi(fitnessMap, rnd);
-                        int ebeveyn2 = TurnuvaSecimi(fitnessMap, rnd);
-
-                        // Çaprazlama yap
-                        var cocuk = Caprazla(populasyon[ebeveyn1], populasyon[ebeveyn2], rnd);
-
-                        // Child mutasyon yap
-                        if (rnd.NextDouble() < mutasyonSiklik)
-                        {
-                            Mutasyon(cocuk, rnd);
-                        }
-
-                        yeniPopulasyon.Add(cocuk);
+                        cocuk = Caprazla(new List<int>(populasyon[ebeveyn1Indeks]), new List<int>(populasyon[ebeveyn2Indeks]), rastgele);
                     }
                     else
                     {
-                        // Turnuva seçimi ile seçimyap
-                        int secilen = TurnuvaSecimi(fitnessMap, rnd);
-
-                        // Klonla
-                        var klon = new List<int>(populasyon[secilen]);
-
-                        // Mutasyon yap
-                        if (rnd.NextDouble() < mutasyonSiklik)
-                        {
-                            Mutasyon(klon, rnd);
-                        }
-
-                        yeniPopulasyon.Add(klon);
+                        // Daha iyi olan ebeveyni seç
+                        cocuk = new List<int>(uygunlukHaritasi.ContainsKey(ebeveyn1Indeks) && uygunlukHaritasi.ContainsKey(ebeveyn2Indeks) && uygunlukHaritasi[ebeveyn1Indeks] > uygunlukHaritasi[ebeveyn2Indeks] ? populasyon[ebeveyn1Indeks] : populasyon[ebeveyn2Indeks]);
                     }
-                }
 
-                // Populasyonu güncelle
+                    if (rastgele.NextDouble() < mutasyonOrani && boyut > 1)
+                    {
+                        MutasyonUygula(cocuk, rastgele);
+                    }
+                    yeniPopulasyon.Add(cocuk);
+                }
                 populasyon = yeniPopulasyon;
             }
 
-            // En iyi rotayı bul
-            Dictionary<int, double> sonFitnessMap = new Dictionary<int, double>();
+            // Son populasyondaki en iyi rotayı bul
+            Dictionary<int, double> sonUygunlukHaritasi = new Dictionary<int, double>();
             for (int i = 0; i < populasyon.Count; i++)
             {
-                double mesafe = RotaMesafesiHesapla(populasyon[i], mesafeMatrisi);
-                sonFitnessMap[i] = mesafe;
+                double mesafe = RotaMesafesiHesapla(populasyon[i], anaMesafeMatrisi);
+                sonUygunlukHaritasi[i] = mesafe;
             }
 
-            int enIyiSonIndeks = sonFitnessMap.OrderBy(x => x.Value).First().Key;
+            if (!sonUygunlukHaritasi.Any() || sonUygunlukHaritasi.All(kvp => kvp.Value == double.MaxValue))
+            {
+                this.Invoke((MethodInvoker)delegate {
+                    MessageBox.Show("Optimum rota bulunamadı. Tüm mesafeler çok yüksek veya hesaplanamadı.", "TSP Hatası", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                });
+                return new List<int>(); // Geçerli rota bulunamazsa boş liste döndür
+            }
+
+            int enIyiSonIndeks = sonUygunlukHaritasi.OrderBy(x => x.Value).First().Key;
             return populasyon[enIyiSonIndeks];
         }
 
-        private int TurnuvaSecimi(Dictionary<int, double> fitnessMap, Random rnd)
+        private int TurnuvaSecimi(Dictionary<int, double> uygunlukHaritasi, Random rastgele, List<List<int>> mevcutPopulasyon) // Parametre adı güncellendi
         {
             int turnuvaBoyutu = 3;
-            List<int> adaylar = new List<int>();
+            if (!uygunlukHaritasi.Any())
+            {
+                // Bu durum idealde oluşmamalıdır.
+                if (mevcutPopulasyon.Any()) return rastgele.Next(mevcutPopulasyon.Count); // Yedek çözüm, ideal değil
+                throw new InvalidOperationException("Uygunluk haritası boş, turnuva seçimi yapılamaz.");
+            }
+            if (uygunlukHaritasi.Count < turnuvaBoyutu) turnuvaBoyutu = uygunlukHaritasi.Count;
 
-            // Rastgele adaylar seç
+            List<int> adayIndeksleri = new List<int>();
+            List<int> populasyonAnahtarlari = uygunlukHaritasi.Keys.ToList();
+
             for (int i = 0; i < turnuvaBoyutu; i++)
             {
-                int aday = rnd.Next(fitnessMap.Count);
-                adaylar.Add(aday);
+                adayIndeksleri.Add(populasyonAnahtarlari[rastgele.Next(populasyonAnahtarlari.Count)]);
             }
-
-            // En yüksek uygunluk değerine sahip adayı döndür
-            return adaylar.OrderByDescending(a => fitnessMap[a]).First();
+            // Adaylar arasından en yüksek uygunluğa sahip olanı seç
+            return adayIndeksleri.OrderByDescending(indeks => uygunlukHaritasi[indeks]).First();
         }
 
-        private List<int> Caprazla(List<int> ebeveyn1, List<int> ebeveyn2, Random rnd)
+        private List<int> Caprazla(List<int> ebeveyn1, List<int> ebeveyn2, Random rastgele)
         {
             int boyut = ebeveyn1.Count;
-            List<int> cocuk = new List<int>(new int[boyut]);
+            if (boyut == 0) return new List<int>();
+            if (boyut == 1) return new List<int>(ebeveyn1); // Tek elemanlıysa kopyasını döndür
 
-            // Ordered Crossover (OX) kullan
-            int baslangic = rnd.Next(boyut);
-            int bitis = rnd.Next(baslangic, boyut);
+            List<int> cocuk = new List<int>(new int[boyut]); // Boş çocuk listesi
+            bool[] cocuktaVar = new bool[boyut + 2];
 
-            // Parent1'den alt dizi kopyala
+            int baslangic = rastgele.Next(boyut);
+            int bitis = rastgele.Next(boyut);
+
+            if (baslangic > bitis) (baslangic, bitis) = (bitis, baslangic); // baslangic <= bitis sağla
+
+            // Ebeveyn1'den bir bölümü çocuğa kopyala
             for (int i = baslangic; i <= bitis; i++)
             {
                 cocuk[i] = ebeveyn1[i];
+                if (ebeveyn1[i] >= 0 && ebeveyn1[i] < cocuktaVar.Length) cocuktaVar[ebeveyn1[i]] = true;
             }
 
-            // Parent2'den kalan elemanları kopyala
-            int currentPos = (bitis + 1) % boyut;
-            int ebeveyn2Pos = (bitis + 1) % boyut;
-
-            while (true)
+            // Ebeveyn2'den kalan elemanları çocuğa ekle
+            int cocukIndeks = (bitis + 1) % boyut;
+            for (int i = 0; i < boyut; i++)
             {
-                if (currentPos == baslangic)
-                    break;
+                int ebeveyn2ElemanIndeksi = (bitis + 1 + i) % boyut; 
+                int eleman = ebeveyn2[ebeveyn2ElemanIndeksi];
 
-                while (cocuk.Contains(ebeveyn2[ebeveyn2Pos]))
+                bool elemanCocuktaMevcut = false;
+                if (eleman >= 0 && eleman < cocuktaVar.Length) elemanCocuktaMevcut = cocuktaVar[eleman];
+
+                if (!elemanCocuktaMevcut)
                 {
-                    ebeveyn2Pos = (ebeveyn2Pos + 1) % boyut;
+                    // Atamadan önce cocukIndeks'in geçerli olduğundan emin olun
+                    if (cocukIndeks < cocuk.Count)
+                    {
+                        cocuk[cocukIndeks] = eleman;
+                        if (eleman >= 0 && eleman < cocuktaVar.Length) cocuktaVar[eleman] = true;
+                    }
+                    cocukIndeks = (cocukIndeks + 1) % boyut;
                 }
-
-                cocuk[currentPos] = ebeveyn2[ebeveyn2Pos];
-                currentPos = (currentPos + 1) % boyut;
-                ebeveyn2Pos = (ebeveyn2Pos + 1) % boyut;
             }
-
             return cocuk;
         }
 
-        private void Mutasyon(List<int> rota, Random rnd)
+        private void MutasyonUygula(List<int> rota, Random rastgele) 
         {
             int boyut = rota.Count;
+            if (boyut < 2) return; // Mutasyon için en az 2 eleman gerekli
 
-            // Rastgele iki index seç
-            int indeks1 = rnd.Next(boyut);
-            int indeks2 = rnd.Next(boyut);
+            // İki rastgele indeks seç
+            int indeks1 = rastgele.Next(boyut);
+            int indeks2 = rastgele.Next(boyut);
 
-            // İki elemanın yerini değiştir
-            int temp = rota[indeks1];
-            rota[indeks1] = rota[indeks2];
-            rota[indeks2] = temp;
-        }
-
-        private double RotaMesafesiHesapla(List<int> rota, double[,] mesafeMatrisi)
-        {
-            double toplam = 0;
-
-            // Şirketten ilk çalışana
-            toplam += mesafeMatrisi[0, rota[0]];
-
-            // Çalışanlar arası
-            for (int i = 0; i < rota.Count - 1; i++)
+            // İndeksler aynıysa, farklı bir ikinci indeks seç (ters çevirme mutasyonu için)
+            if (indeks1 == indeks2)
             {
-                toplam += mesafeMatrisi[rota[i], rota[i + 1]];
+                if (boyut > 1) indeks2 = (indeks1 + 1 + rastgele.Next(boyut - 1)) % boyut;
+                else return;
             }
 
-            return toplam;
+            // İndeksleri sırala (baslangic <= bitis)
+            int baslangic = Math.Min(indeks1, indeks2);
+            int bitis = Math.Max(indeks1, indeks2);
+
+            // Seçilen aralıktaki elemanları ters çevir
+            while (baslangic < bitis)
+            {
+                (rota[baslangic], rota[bitis]) = (rota[bitis], rota[baslangic]); // Değiş tokuş
+                baslangic++;
+                bitis--;
+            }
+        }
+
+        private double RotaMesafesiHesapla(List<int> rota, double[,] anaMesafeMatrisi) 
+        {
+            double toplamMesafe = 0;
+            if (rota == null || !rota.Any()) return double.MaxValue;
+
+            // Matris sınırlarını kontrol et
+            int matrisBoyutu = anaMesafeMatrisi.GetLength(0);
+            if (matrisBoyutu == 0) return double.MaxValue;
+            // Rotadaki indekslerin geçerliliğini kontrol et
+            if (rota.Any(indeks => indeks < 0 || indeks >= matrisBoyutu)) return double.MaxValue; // Geçersiz indeks
+
+            // Şirketten (0. indeks) ilk durağa olan mesafe
+            if (0 >= matrisBoyutu || rota[0] >= matrisBoyutu) return double.MaxValue; // Sınır kontrolü
+            toplamMesafe += anaMesafeMatrisi[0, rota[0]];
+
+            // Duraklar arası mesafeler
+            for (int i = 0; i < rota.Count - 1; i++)
+            {
+                if (rota[i] >= matrisBoyutu || rota[i + 1] >= matrisBoyutu) return double.MaxValue; // Sınır kontrolü
+                toplamMesafe += anaMesafeMatrisi[rota[i], rota[i + 1]];
+            }
+            return toplamMesafe;
+        }
+
+        private List<ServisSecimi> ServisSeciminiOptimizeEt(int kalanCalisanSayisi, int[] kapasiteler, double rotaMesafesiKm)
+        {
+            string anahtar = $"{kalanCalisanSayisi}_{rotaMesafesiKm.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            if (onbellek.ContainsKey(anahtar)) return onbellek[anahtar];
+
+            if (kalanCalisanSayisi == 0) return new List<ServisSecimi>(); 
+            if (kalanCalisanSayisi < 0) return null; 
+
+            List<ServisSecimi> enIyiGenelKombinasyon = null;
+            double enIyiKombinasyonIcinMinMaliyet = double.MaxValue;
+
+            // Önce daha büyük kapasiteleri dene
+            foreach (var kapasite in kapasiteler.OrderByDescending(c => c))
+            {
+                // Mevcut kapasite tam olarak kullanılabiliyorsa
+                if (kalanCalisanSayisi >= kapasite)
+                {
+                    var altProblemSonucu = ServisSeciminiOptimizeEt(kalanCalisanSayisi - kapasite, kapasiteler, rotaMesafesiKm);
+                    // Kalan kısım için geçerli bir çözüm varsa
+                    if (altProblemSonucu != null)
+                    {
+                        double mevcutSecimMaliyeti = KapasiteIcinMaliyetAl(kapasite, rotaMesafesiKm);
+                        if (mevcutSecimMaliyeti == double.MaxValue) continue; // Maliyet geçersizse atla
+
+                        double mevcutKombinasyonMaliyeti = mevcutSecimMaliyeti + altProblemSonucu.Sum(sr => sr.ToplamFiyat);
+
+                        if (enIyiGenelKombinasyon == null || mevcutKombinasyonMaliyeti < enIyiKombinasyonIcinMinMaliyet)
+                        {
+                            enIyiKombinasyonIcinMinMaliyet = mevcutKombinasyonMaliyeti;
+                            enIyiGenelKombinasyon = new List<ServisSecimi>
+                            {
+                                // BirimFiyat'ın bu tek servis için toplam maliyet olduğunu varsayarsak
+                                new ServisSecimi { ServisTipi = kapasite, ServisSayisi = 1, TasinanKisiSayisi = kapasite, ToplamFiyat = mevcutSecimMaliyeti, BirimFiyat = mevcutSecimMaliyeti }
+                            };
+                            enIyiGenelKombinasyon.AddRange(altProblemSonucu);
+                        }
+                    }
+                }
+                // Mevcut kapasite kalan çalışanlardan büyükse ancak onları kapsayabiliyorsa
+                else if (kalanCalisanSayisi > 0 && kapasite >= kalanCalisanSayisi)
+                {
+                    double mevcutSecimMaliyeti = KapasiteIcinMaliyetAl(kapasite, rotaMesafesiKm);
+                    if (mevcutSecimMaliyeti == double.MaxValue) continue; // Maliyet geçersizse atla
+
+                    if (enIyiGenelKombinasyon == null || mevcutSecimMaliyeti < enIyiKombinasyonIcinMinMaliyet)
+                    {
+                        enIyiKombinasyonIcinMinMaliyet = mevcutSecimMaliyeti;
+                        enIyiGenelKombinasyon = new List<ServisSecimi>
+                        {
+                            new ServisSecimi { ServisTipi = kapasite, ServisSayisi = 1, TasinanKisiSayisi = kalanCalisanSayisi, ToplamFiyat = mevcutSecimMaliyeti, BirimFiyat = mevcutSecimMaliyeti }
+                        };
+                    }
+                }
+            }
+            // Sonucu belleğe al (çözüm bulunamazsa null olabilir)
+            onbellek[anahtar] = enIyiGenelKombinasyon;
+            return enIyiGenelKombinasyon;
         }
 
 
-        #endregion
-
-        #region Servis Seçimi İşlemleri
-
-        private List<ServisSecimi> EnUygunServisSeciminiYap(int calisanSayisi, List<double> servisMesafeleri, Dictionary<string, List<ServisUcret>> servisUcretleri)
+        private double KapasiteIcinMaliyetAl(int kapasite, double rotaMesafesiKm)
         {
-            Console.WriteLine("EnUygunServisSeciminiYap method started.");
+            // Ücret hesaplama mantığı için rotaMesafesiKm'nin pozitif olduğundan emin olun
+            double mevcutRotaMesafesi = (rotaMesafesiKm <= 0) ? 1.0 : rotaMesafesiKm;
+
+            if (this.servisUcretleri == null || !this.servisUcretleri.Any())
+            {
+                Console.WriteLine("Servis ücretleri yüklenmemiş.");
+                return double.MaxValue; 
+            }
+
+            // Rota mesafesine uygun kilometre grubunu bul
+            string kilometreGrubuAnahtari = this.servisUcretleri.Keys.FirstOrDefault(grupAnahtari =>
+            {
+                string[] aralik = grupAnahtari.Split('-');
+                return aralik.Length == 2 &&
+                       int.TryParse(aralik[0], out int baslangic) &&
+                       int.TryParse(aralik[1], out int bitis) &&
+                       mevcutRotaMesafesi >= baslangic && mevcutRotaMesafesi <= bitis;
+            });
+
+            if (string.IsNullOrEmpty(kilometreGrubuAnahtari))
+            {
+                // Yedek mantık: doğrudan eşleşme yoksa en uygun grubu bulmaya çalışın
+                // Bu genellikle mevcutRotaMesafesi tüm aralıkları aşarsa en yüksek tanımlanmış aralığı kullanmak,
+                // veya tüm aralıkların altındaysa en düşük tanımlanmış aralığı kullanmak anlamına gelir.
+                // Mevcut yedek (EnUygunServisSeciminiYap'a benzer şekilde) en büyük BitisKm'ye sahip grubu seçer.
+                kilometreGrubuAnahtari = this.servisUcretleri.Keys
+                    .Select(g => new { Anahtar = g, Parcalar = g.Split('-') })
+                    .Where(g => g.Parcalar.Length == 2 && int.TryParse(g.Parcalar[0], out _) && int.TryParse(g.Parcalar[1], out _))
+                    .OrderByDescending(g => int.Parse(g.Parcalar[1])) // BitisKm'ye göre azalan sırada sırala
+                    .FirstOrDefault()?.Anahtar;
+
+                // Hala anahtar yoksa, mutlak ilk olanı almayı dene
+                if (string.IsNullOrEmpty(kilometreGrubuAnahtari))
+                {
+                    kilometreGrubuAnahtari = this.servisUcretleri.Keys.FirstOrDefault();
+                }
+
+                if (string.IsNullOrEmpty(kilometreGrubuAnahtari))
+                {
+                    Console.WriteLine($"Servis ücretleri tanımlı değil veya uygun bir kilometre grubu bulunamadı. Rota mesafesi: {mevcutRotaMesafesi}");
+                    return double.MaxValue;
+                }
+                // Yedek grubun kullanıldığını günlüğe kaydet
+                Console.WriteLine($"Rota mesafesi ({mevcutRotaMesafesi} km) için tam kilometre grubu bulunamadı. Alternatif grup: {kilometreGrubuAnahtari} kullanılıyor.");
+            }
+
+            if (this.servisUcretleri.TryGetValue(kilometreGrubuAnahtari, out var ucretlerListesi))
+            {
+                var servisUcretBilgisi = ucretlerListesi.FirstOrDefault(u => u.Kapasite == kapasite);
+                if (servisUcretBilgisi != null)
+                {
+                    return servisUcretBilgisi.Ucret;
+                }
+                else
+                {
+                    Console.WriteLine($"'{kilometreGrubuAnahtari}' kilometre grubu için {kapasite} kişilik servis ücreti bulunamadı.");
+                    return double.MaxValue;
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Beklenmedik hata: Kilometre grubu '{kilometreGrubuAnahtari}' servis ücretleri sözlüğünde bulunamadı.");
+                return double.MaxValue;
+            }
+        }
+
+        private List<ServisSecimi> EnUygunServisSeciminiYap(int calisanSayisi, List<double> servisMesafeListesi, Dictionary<string, List<ServisUcret>> servisUcretleriSozlugu) // Parametre adları güncellendi
+        {
+            Console.WriteLine("EnUygunServisSeciminiYap metodu başladı.");
+            if (calisanSayisi == 0) return new List<ServisSecimi>();
 
             try
             {
-                List<ServisSecimi> tumKombinasyonlar = new List<ServisSecimi>();
+                List<ServisSecimi> tumKombinasyonlarToplami = new List<ServisSecimi>();
+                object kilitNesnesi = new object(); // Paralel işlemler için kilit nesnesi
 
-                for (int i = 0; i < servisMesafeleri.Count; i++)
+                foreach (double rotaMesafesiKm in servisMesafeListesi)
                 {
-                    double rotaMesafesi = servisMesafeleri[i];
+                    // Sıfıra bölme veya negatiften kaçının
+                    double mevcutRotaMesafesi = (rotaMesafesiKm <= 0) ? 1.0 : rotaMesafesiKm;
 
-                    // Kilometre grubunu belirle
-                    string kilometreGrubu = "";
-                    foreach (var grup in servisUcretleri.Keys)
+                    string kilometreGrubuAnahtari = servisUcretleriSozlugu.Keys.FirstOrDefault(grupAnahtari =>
                     {
-                        string[] aralik = grup.Split('-');
-                        int baslangic = int.Parse(aralik[0]);
-                        int bitis = int.Parse(aralik[1]);
+                        string[] aralik = grupAnahtari.Split('-');
+                        return aralik.Length == 2 &&
+                               int.TryParse(aralik[0], out int baslangic) &&
+                               int.TryParse(aralik[1], out int bitis) &&
+                               mevcutRotaMesafesi >= baslangic && mevcutRotaMesafesi <= bitis;
+                    });
 
-                        if (rotaMesafesi >= baslangic && rotaMesafesi <= bitis)
+                    if (string.IsNullOrEmpty(kilometreGrubuAnahtari))
+                    {
+                        // En uygun yedek kilometre grubunu bul
+                        kilometreGrubuAnahtari = servisUcretleriSozlugu.Keys
+                            .Select(g => new { Anahtar = g, Parcalar = g.Split('-') })
+                            .Where(g => g.Parcalar.Length == 2 && int.TryParse(g.Parcalar[1], out _)) // BitisKm parse edilebilsin
+                            .OrderByDescending(g => int.Parse(g.Parcalar[1])) // En yüksek BitisKm'ye göre
+                            .FirstOrDefault()?.Anahtar ?? servisUcretleriSozlugu.Keys.FirstOrDefault(); // Hiçbiri uymazsa ilkini al
+
+                        if (string.IsNullOrEmpty(kilometreGrubuAnahtari))
                         {
-                            kilometreGrubu = grup;
-                            break;
+                            Console.WriteLine($"Servis ücretleri tanımlı değil. Rota mesafesi: {mevcutRotaMesafesi}");
+                            throw new Exception($"Servis ücretleri tanımlı değil.");
                         }
+                        Console.WriteLine($"Rota mesafesi ({mevcutRotaMesafesi} km) için tam kilometre grubu bulunamadı. Alternatif grup: {kilometreGrubuAnahtari} kullanılıyor.");
                     }
 
-                    if (string.IsNullOrEmpty(kilometreGrubu))
+                    var ucretlerListesi = servisUcretleriSozlugu[kilometreGrubuAnahtari];
+                    // Kapasiteye göre ücretleri içeren bir sözlük oluştur
+                    Dictionary<int, double> kapasiteUcretHaritasi = ucretlerListesi.ToDictionary(u => u.Kapasite, u => u.Ucret);
+
+                    // Her servis tipi için maksimum olası sayıyı hesapla
+                    int maks19Kapasiteli = kapasiteUcretHaritasi.ContainsKey(19) ? (int)Math.Ceiling((double)calisanSayisi / 19.0) : 0;
+                    int maks27Kapasiteli = kapasiteUcretHaritasi.ContainsKey(27) ? (int)Math.Ceiling((double)calisanSayisi / 27.0) : 0;
+                    int maks46Kapasiteli = kapasiteUcretHaritasi.ContainsKey(46) ? (int)Math.Ceiling((double)calisanSayisi / 46.0) : 0;
+
+                    // Tüm olası servis kombinasyonlarını paralel olarak değerlendir
+                    Parallel.For(0, maks19Kapasiteli + 1, s19 =>
                     {
-                        throw new Exception($"Rota mesafesi ({rotaMesafesi} km) için uygun kilometre grubu bulunamadı.");
-                    }
-
-                    var ucretler = servisUcretleri[kilometreGrubu];
-
-                    // 19 kişilik servis sayısı
-                    int maks19 = (int)Math.Ceiling(calisanSayisi / 19.0);
-                    // 27 kişilik servis sayısı
-                    int maks27 = (int)Math.Ceiling(calisanSayisi / 27.0);
-                    // 46 kişilik servis sayısı
-                    int maks46 = (int)Math.Ceiling(calisanSayisi / 46.0);
-
-                    Console.WriteLine($"Max 19: {maks19}, Max 27: {maks27}, Max 46: {maks46}");
-
-                    Parallel.For(0, maks19 + 1, s19 =>
-                    {
-                        Console.WriteLine($"Servis 19k isleniyor: {s19}");
-                        for (int s27 = 0; s27 <= maks27; s27++)
+                        for (int s27 = 0; s27 <= maks27Kapasiteli; s27++)
                         {
-                            Console.WriteLine($"Servis 27k isleniyor: {s27}");
-                            for (int s46 = 0; s46 <= maks46; s46++)
+                            for (int s46 = 0; s46 <= maks46Kapasiteli; s46++)
                             {
-                                Console.WriteLine($"Servis 46k isleniyor: {s46}");
-                                int kapasite = s19 * 19 + s27 * 27 + s46 * 46;
-
-                                if (kapasite >= calisanSayisi && (s19 > 0 || s27 > 0 || s46 > 0))
+                                int mevcutToplamKapasite = (s19 * 19) + (s27 * 27) + (s46 * 46);
+                                // Toplam kapasite çalışan sayısını karşılıyorsa ve en az bir servis varsa
+                                if (mevcutToplamKapasite >= calisanSayisi && (s19 > 0 || s27 > 0 || s46 > 0))
                                 {
-                                    double toplam19 = s19 * ucretler.First(u => u.Kapasite == 19).Ucret;
-                                    double toplam27 = s27 * ucretler.First(u => u.Kapasite == 27).Ucret;
-                                    double toplam46 = s46 * ucretler.First(u => u.Kapasite == 46).Ucret;
-                                    double toplamMaliyet = toplam19 + toplam27 + toplam46;
+                                    double toplamMaliyet = 0;
+                                    if (s19 > 0 && kapasiteUcretHaritasi.ContainsKey(19)) toplamMaliyet += s19 * kapasiteUcretHaritasi[19];
+                                    if (s27 > 0 && kapasiteUcretHaritasi.ContainsKey(27)) toplamMaliyet += s27 * kapasiteUcretHaritasi[27];
+                                    if (s46 > 0 && kapasiteUcretHaritasi.ContainsKey(46)) toplamMaliyet += s46 * kapasiteUcretHaritasi[46];
 
-                                    List<ServisSecimi> kombinasyon = new List<ServisSecimi>();
+                                    List<ServisSecimi> mevcutKombinasyonDetaylari = new List<ServisSecimi>();
+                                    int kalanCalisanSayisi = calisanSayisi;
 
-                                    if (s19 > 0)
+                                    // Her servis tipinden kaç kişinin taşındığını ve maliyetini hesapla
+                                    if (s19 > 0 && kapasiteUcretHaritasi.ContainsKey(19))
                                     {
-                                        kombinasyon.Add(new ServisSecimi
-                                        {
-                                            ServisTipi = 19,
-                                            ServisSayisi = s19,
-                                            TasinanKisiSayisi = Math.Min(s19 * 19, calisanSayisi),
-                                            BirimFiyat = toplam19 / rotaMesafesi, //Birim fiyatı toplam km ye göre hesapla
-                                            ToplamFiyat = toplam19
-                                        });
+                                        int tasinan = Math.Min(s19 * 19, kalanCalisanSayisi);
+                                        mevcutKombinasyonDetaylari.Add(new ServisSecimi { ServisTipi = 19, ServisSayisi = s19, TasinanKisiSayisi = tasinan, BirimFiyat = kapasiteUcretHaritasi[19] / mevcutRotaMesafesi, ToplamFiyat = s19 * kapasiteUcretHaritasi[19] });
+                                        kalanCalisanSayisi -= tasinan;
+                                    }
+                                    if (s27 > 0 && kapasiteUcretHaritasi.ContainsKey(27) && kalanCalisanSayisi > 0)
+                                    {
+                                        int tasinan = Math.Min(s27 * 27, kalanCalisanSayisi);
+                                        mevcutKombinasyonDetaylari.Add(new ServisSecimi { ServisTipi = 27, ServisSayisi = s27, TasinanKisiSayisi = tasinan, BirimFiyat = kapasiteUcretHaritasi[27] / mevcutRotaMesafesi, ToplamFiyat = s27 * kapasiteUcretHaritasi[27] });
+                                        kalanCalisanSayisi -= tasinan;
+                                    }
+                                    if (s46 > 0 && kapasiteUcretHaritasi.ContainsKey(46) && kalanCalisanSayisi > 0)
+                                    {
+                                        int tasinan = Math.Min(s46 * 46, kalanCalisanSayisi);
+                                        mevcutKombinasyonDetaylari.Add(new ServisSecimi { ServisTipi = 46, ServisSayisi = s46, TasinanKisiSayisi = tasinan, BirimFiyat = kapasiteUcretHaritasi[46] / mevcutRotaMesafesi, ToplamFiyat = s46 * kapasiteUcretHaritasi[46] });
                                     }
 
-                                    if (s27 > 0)
+                                    if (mevcutKombinasyonDetaylari.Any())
                                     {
-                                        int kalan = Math.Max(0, calisanSayisi - (s19 * 19));
-                                        kombinasyon.Add(new ServisSecimi
+                                        lock (kilitNesnesi) // Liste erişimini senkronize et
                                         {
-                                            ServisTipi = 27,
-                                            ServisSayisi = s27,
-                                            TasinanKisiSayisi = Math.Min(s27 * 27, kalan),
-                                            BirimFiyat = toplam27 / rotaMesafesi, //Birim fiyatı toplam km ye göre hesapla
-                                            ToplamFiyat = toplam27
-                                        });
-                                    }
-
-                                    if (s46 > 0)
-                                    {
-                                        int kalan = Math.Max(0, calisanSayisi - (s19 * 19) - (s27 * 27));
-                                        kombinasyon.Add(new ServisSecimi
-                                        {
-                                            ServisTipi = 46,
-                                            ServisSayisi = s46,
-                                            TasinanKisiSayisi = Math.Min(s46 * 46, kalan),
-                                            BirimFiyat = toplam46 / rotaMesafesi, //Birim fiyatı toplam km ye göre hesapla
-                                            ToplamFiyat = toplam46
-                                        });
-                                    }
-
-                                    // Toplam kombinasyon maliyetini ekle
-                                    lock (tumKombinasyonlar)
-                                    {
-                                        tumKombinasyonlar.Add(new ServisSecimi
-                                        {
-                                            ServisTipi = 0, // Toplam
-                                            ServisSayisi = s19 + s27 + s46,
-                                            TasinanKisiSayisi = calisanSayisi,
-                                            BirimFiyat = 0,
-                                            ToplamFiyat = toplamMaliyet,
-                                            Detaylar = kombinasyon
-                                        });
+                                            tumKombinasyonlarToplami.Add(new ServisSecimi { ServisTipi = 0, ServisSayisi = s19 + s27 + s46, TasinanKisiSayisi = calisanSayisi, ToplamFiyat = toplamMaliyet, Detaylar = mevcutKombinasyonDetaylari });
+                                        }
                                     }
                                 }
                             }
@@ -905,169 +1125,166 @@ namespace ServisOptimizasyonSistemi
                     });
                 }
 
-                // En düşük maliyetli kombinasyonu bul
-                var enUygunKombinasyon = tumKombinasyonlar
-                    .OrderBy(k => k.ToplamFiyat)
-                    .ThenBy(k => k.ServisSayisi)
+                if (!tumKombinasyonlarToplami.Any())
+                {
+                    Console.WriteLine("Uygun servis kombinasyonu bulunamadı.");
+                    return new List<ServisSecimi>(); // Boş liste döndür
+                }
+
+                // En düşük maliyetli ve sonra en az servis sayısına sahip kombinasyonu seç
+                var enUygunKombinasyon = tumKombinasyonlarToplami
+                    .OrderBy(komb => komb.ToplamFiyat)
+                    .ThenBy(komb => komb.ServisSayisi)
                     .FirstOrDefault();
 
-                Console.WriteLine("En Uygun Servis Secimi Yapıldı.");
-
+                Console.WriteLine("En Uygun Servis Seçimi Yapıldı.");
                 return enUygunKombinasyon?.Detaylar ?? new List<ServisSecimi>();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"En Uygun Servis Secimi sirasinda hata meydana geldi: {ex.Message}");
-                Console.WriteLine(ex.StackTrace);
-                throw;
+                Console.WriteLine($"En Uygun Servis Seçimi sırasında hata: {ex.Message}\n{ex.StackTrace}");
+                throw; 
             }
         }
-
-
-
-
         #endregion
 
         #region Rapor İşlemleri
 
-
         private void RaporuWordOlarakKaydet(string dosyaYolu)
         {
-            // Dosya oluştur
-            using (var doc = DocX.Create(dosyaYolu))
+            try
             {
-                // Başlık ekle
-                var title = doc.InsertParagraph("SERVİS OPTİMİZASYON RAPORU")
-                    .FontSize(16)
-                    .Bold()
-                    .Alignment = Alignment.center;
-
-                // Alt başlık ekle
-                var subtitle = doc.InsertParagraph($"Tarih: {DateTime.Now}\nBölge: {cmbBolgeler.SelectedItem.ToString()}\nÇalışan Sayısı: {calisanlar.Count}\nHat Toplam Mesafe: {toplamMesafe:N2} km")
-                    .FontSize(12)
-                    .Bold(false)
-                    .Alignment = Alignment.left;
-
-                // Rotayı ekle
-                var routeTitle = doc.InsertParagraph("OPTİMAL ROTA")
-                    .FontSize(14)
-                    .Bold()
-                    .Alignment = Alignment.left;
-
-                var routeDetails = doc.InsertParagraph("Şirket");
-                foreach (var index in optimumRota)
+                using (var belge = DocX.Create(dosyaYolu)) 
                 {
-                    if (index > 0 && index <= calisanlar.Count)
+                    belge.InsertParagraph("SERVİS OPTİMİZASYON RAPORU").FontSize(16).Bold().Alignment = Alignment.center;
+                    belge.InsertParagraph(); 
+
+                    belge.InsertParagraph($"Tarih: {DateTime.Now:dd.MM.yyyy HH:mm:ss}").FontSize(12);
+                    belge.InsertParagraph($"Bölge: {cmbBolgeler.SelectedItem?.ToString() ?? "Belirtilmemiş"}");
+                    belge.InsertParagraph($"Çalışan Sayısı: {calisanlar?.Count ?? 0}");
+                    belge.InsertParagraph($"Hat Toplam Mesafe (Genel TSP): {toplamMesafe:N2} km");
+                    belge.InsertParagraph();
+
+                    belge.InsertParagraph("SERVİS ROTALARI VE MESAFELERİ").FontSize(14).Bold();
+                    if (lstOptimumRota.Items.Count > 0)
                     {
-                        routeDetails.AppendLine($"{index}. {calisanlar[index - 1].AdSoyad} - {calisanlar[index - 1].YaklasikAdres}");
+                        foreach (var oge in lstOptimumRota.Items) belge.InsertParagraph(oge.ToString()).FontSize(10);
                     }
-                }
+                    else belge.InsertParagraph("Optimize edilmiş rota bilgisi bulunmamaktadır.").FontSize(10);
+                    belge.InsertParagraph();
 
-                // Çalışan listesini ekle
-                var employeeListTitle = doc.InsertParagraph("ÇALIŞAN LİSTESİ")
-                    .FontSize(14)
-                    .Bold()
-                    .Alignment = Alignment.left;
-
-                var employeeDetails = doc.InsertParagraph();
-                for (int i = 0; i < calisanlar.Count; i++)
-                {
-                    employeeDetails.AppendLine($"{i + 1}. {calisanlar[i].AdSoyad} - {calisanlar[i].YaklasikAdres}");
-                }
-
-                // Servis seçimini ekle
-                var serviceSelectionTitle = doc.InsertParagraph("SERVİS SEÇİMİ")
-                    .FontSize(14)
-                    .Bold()
-                    .Alignment = Alignment.left;
-
-                var serviceDetails = doc.InsertParagraph();
-                double toplamMaliyet = 0;
-                foreach (DataGridViewRow row in dgvSonuclar.Rows)
-                {
-                    string servisTipi = row.Cells["colServisTipi"].Value?.ToString();
-                    string servisSayisi = row.Cells["colServisSayisi"].Value?.ToString();
-                    string kisiSayisi = row.Cells["colKisiSayisi"].Value?.ToString();
-                    string birimFiyat = row.Cells["colBirimFiyat"].Value?.ToString();
-                    string toplamFiyat = row.Cells["colToplamFiyat"].Value?.ToString();
-
-                    serviceDetails.AppendLine($"{servisTipi} x {servisSayisi} = {toplamFiyat}");
-
-                    if (decimal.TryParse(toplamFiyat.Replace("₺", "").Trim(), out decimal fiyat))
+                    belge.InsertParagraph("ÇALIŞAN LİSTESİ").FontSize(14).Bold();
+                    if (calisanlar != null && calisanlar.Any())
                     {
-                        toplamMaliyet += (double)fiyat;
+                        var calisanTablosu = belge.AddTable(calisanlar.Count + 1, 3); 
+                        calisanTablosu.Design = TableDesign.TableGrid; 
+                        // Başlık satırı
+                        calisanTablosu.Rows[0].Cells[0].Paragraphs.First().Append("No").Bold();
+                        calisanTablosu.Rows[0].Cells[1].Paragraphs.First().Append("Ad Soyad").Bold();
+                        calisanTablosu.Rows[0].Cells[2].Paragraphs.First().Append("Yaklaşık Adres").Bold();
+                        // Veri satırları
+                        for (int i = 0; i < calisanlar.Count; i++)
+                        {
+                            calisanTablosu.Rows[i + 1].Cells[0].Paragraphs.First().Append((i + 1).ToString());
+                            calisanTablosu.Rows[i + 1].Cells[1].Paragraphs.First().Append(calisanlar[i].AdSoyad);
+                            calisanTablosu.Rows[i + 1].Cells[2].Paragraphs.First().Append(calisanlar[i].YaklasikAdres);
+                        }
+                        belge.InsertTable(calisanTablosu);
                     }
-                }
-                serviceDetails.AppendLine($"\nTOPLAM MALİYET: {toplamMaliyet:C2}");
+                    else belge.InsertParagraph("Çalışan listesi bulunmamaktadır.").FontSize(10);
+                    belge.InsertParagraph();
 
-                // Dosya kaydet
-                doc.Save();
-                MessageBox.Show($"Rapor başarıyla kaydedildi: {dosyaYolu}", "Bilgi", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    belge.InsertParagraph("SERVİS SEÇİMİ VE MALİYET").FontSize(14).Bold();
+                    if (dgvSonuclar.Rows.Count > 0)
+                    {
+                        var servisTablosu = belge.AddTable(dgvSonuclar.Rows.Cast<DataGridViewRow>().Count(r => !r.IsNewRow) + 1, 5); 
+                        servisTablosu.Design = TableDesign.TableGrid;
+                        // Başlık satırı
+                        servisTablosu.Rows[0].Cells[0].Paragraphs.First().Append("Servis Tipi").Bold();
+                        servisTablosu.Rows[0].Cells[1].Paragraphs.First().Append("Servis Sayısı").Bold();
+                        servisTablosu.Rows[0].Cells[2].Paragraphs.First().Append("Taşınan Kişi").Bold();
+                        servisTablosu.Rows[0].Cells[3].Paragraphs.First().Append("Birim Fiyat").Bold();
+                        servisTablosu.Rows[0].Cells[4].Paragraphs.First().Append("Toplam Fiyat").Bold();
+                        // Veri satırları
+                        int satirIndeksi = 1;
+                        foreach (DataGridViewRow satir in dgvSonuclar.Rows)
+                        {
+                            if (satir.IsNewRow) continue; 
+                            servisTablosu.Rows[satirIndeksi].Cells[0].Paragraphs.First().Append(satir.Cells["colServisTipi"].Value?.ToString() ?? "");
+                            servisTablosu.Rows[satirIndeksi].Cells[1].Paragraphs.First().Append(satir.Cells["colServisSayisi"].Value?.ToString() ?? "");
+                            servisTablosu.Rows[satirIndeksi].Cells[2].Paragraphs.First().Append(satir.Cells["colKisiSayisi"].Value?.ToString() ?? "");
+                            servisTablosu.Rows[satirIndeksi].Cells[3].Paragraphs.First().Append(satir.Cells["colBirimFiyat"].Value?.ToString() ?? "");
+                            servisTablosu.Rows[satirIndeksi].Cells[4].Paragraphs.First().Append(satir.Cells["colToplamFiyat"].Value?.ToString() ?? "");
+                            satirIndeksi++;
+                        }
+                        belge.InsertTable(servisTablosu);
+                        belge.InsertParagraph($"\nTOPLAM MALİYET: {lblToplamMaliyet.Text}").Bold().Alignment = Alignment.right;
+                    }
+                    else belge.InsertParagraph("Servis seçimi bilgisi bulunmamaktadır.").FontSize(10);
+
+                    belge.Save(); 
+                    MessageBox.Show($"Word Raporu başarıyla kaydedildi: {dosyaYolu}", "Bilgi", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Word Raporu oluşturulurken bir hata oluştu: {ex.Message}", "Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
-
 
         private void RaporuMetinOlarakKaydet(string dosyaYolu)
         {
-            StringBuilder sb = new StringBuilder();
-            string bolge = cmbBolgeler.SelectedItem.ToString();
-
-            sb.AppendLine("SERVİS OPTİMİZASYON RAPORU");
-            sb.AppendLine("==========================");
-            sb.AppendLine();
-
-            sb.AppendLine($"Tarih: {DateTime.Now}");
-            sb.AppendLine($"Bölge: {bolge}");
-            sb.AppendLine($"Çalışan Sayısı: {calisanlar.Count}");
-            sb.AppendLine($"Hat Toplam Mesafe: {toplamMesafe:N2} km");
-            sb.AppendLine();
-
-            sb.AppendLine("OPTİMAL ROTA");
-            sb.AppendLine("------------");
-            sb.AppendLine("Şirket");
-            foreach (var index in optimumRota)
+            try
             {
-                if (index > 0 && index <= calisanlar.Count)
+                StringBuilder metinOlusturucu = new StringBuilder(); 
+                metinOlusturucu.AppendLine("SERVİS OPTİMİZASYON RAPORU");
+                metinOlusturucu.AppendLine("==========================");
+                metinOlusturucu.AppendLine($"Tarih: {DateTime.Now:dd.MM.yyyy HH:mm:ss}");
+                metinOlusturucu.AppendLine($"Bölge: {cmbBolgeler.SelectedItem?.ToString() ?? "Belirtilmemiş"}");
+                metinOlusturucu.AppendLine($"Çalışan Sayısı: {calisanlar?.Count ?? 0}");
+                metinOlusturucu.AppendLine($"Hat Toplam Mesafe (Genel TSP): {toplamMesafe:N2} km\n");
+
+                metinOlusturucu.AppendLine("SERVİS ROTALARI VE MESAFELERİ");
+                metinOlusturucu.AppendLine("-----------------------------");
+                if (lstOptimumRota.Items.Count > 0) foreach (var oge in lstOptimumRota.Items) metinOlusturucu.AppendLine(oge.ToString());
+                else metinOlusturucu.AppendLine("Optimize edilmiş rota bilgisi bulunmamaktadır.");
+                metinOlusturucu.AppendLine();
+
+                metinOlusturucu.AppendLine("ÇALIŞAN LİSTESİ");
+                metinOlusturucu.AppendLine("--------------");
+                if (calisanlar != null && calisanlar.Any())
                 {
-                    sb.AppendLine($"{index}. {calisanlar[index - 1].AdSoyad} - {calisanlar[index - 1].YaklasikAdres}");
+                    for (int i = 0; i < calisanlar.Count; i++) metinOlusturucu.AppendLine($"{i + 1}. {calisanlar[i].AdSoyad} - {calisanlar[i].YaklasikAdres}");
                 }
-            }
-            sb.AppendLine();
+                else metinOlusturucu.AppendLine("Çalışan listesi bulunmamaktadır.");
+                metinOlusturucu.AppendLine();
 
-            sb.AppendLine("ÇALIŞAN LİSTESİ");
-            sb.AppendLine("--------------");
-            for (int i = 0; i < calisanlar.Count; i++)
-            {
-                sb.AppendLine($"{i + 1}. {calisanlar[i].AdSoyad} - {calisanlar[i].YaklasikAdres}");
-            }
-            sb.AppendLine();
-
-            sb.AppendLine("SERVİS SEÇİMİ");
-            sb.AppendLine("------------");
-            double toplamMaliyet = 0;
-
-            foreach (DataGridViewRow row in dgvSonuclar.Rows)
-            {
-                string servisTipi = row.Cells["colServisTipi"].Value?.ToString();
-                string servisSayisi = row.Cells["colServisSayisi"].Value?.ToString();
-                string kisiSayisi = row.Cells["colKisiSayisi"].Value?.ToString();
-                string birimFiyat = row.Cells["colBirimFiyat"].Value?.ToString();
-                string toplamFiyat = row.Cells["colToplamFiyat"].Value?.ToString();
-
-                sb.AppendLine($"{servisTipi} x {servisSayisi} = {toplamFiyat}");
-
-                if (decimal.TryParse(toplamFiyat.Replace("₺", "").Trim(), out decimal fiyat))
+                metinOlusturucu.AppendLine("SERVİS SEÇİMİ VE MALİYET");
+                metinOlusturucu.AppendLine("-------------------------");
+                if (dgvSonuclar.Rows.Count > 0)
                 {
-                    toplamMaliyet += (double)fiyat;
+                    metinOlusturucu.AppendLine(String.Format("{0,-20} | {1,-15} | {2,-15} | {3,-20} | {4,-15}", "Servis Tipi", "Servis Sayısı", "Taşınan Kişi", "Birim Fiyat", "Toplam Fiyat"));
+                    metinOlusturucu.AppendLine(new string('-', 90)); 
+                    foreach (DataGridViewRow satir in dgvSonuclar.Rows)
+                    {
+                        if (satir.IsNewRow) continue;
+                        metinOlusturucu.AppendLine(String.Format("{0,-20} | {1,-15} | {2,-15} | {3,-20} | {4,-15}",
+                            satir.Cells["colServisTipi"].Value?.ToString() ?? "", satir.Cells["colServisSayisi"].Value?.ToString() ?? "",
+                            satir.Cells["colKisiSayisi"].Value?.ToString() ?? "", satir.Cells["colBirimFiyat"].Value?.ToString() ?? "",
+                            satir.Cells["colToplamFiyat"].Value?.ToString() ?? ""));
+                    }
+                    metinOlusturucu.AppendLine($"\nTOPLAM MALİYET: {lblToplamMaliyet.Text}");
                 }
+                else metinOlusturucu.AppendLine("Servis seçimi bilgisi bulunmamaktadır.");
+
+                File.WriteAllText(dosyaYolu, metinOlusturucu.ToString(), Encoding.UTF8); 
+                MessageBox.Show($"Metin Raporu başarıyla kaydedildi: {dosyaYolu}", "Bilgi", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-
-            sb.AppendLine();
-            sb.AppendLine($"TOPLAM MALİYET: {toplamMaliyet:C2}");
-
-            File.WriteAllText(dosyaYolu, sb.ToString());
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Metin Raporu oluşturulurken bir hata oluştu: {ex.Message}", "Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
-
         #endregion
 
         private void lblToplamMesafe_Click(object sender, EventArgs e)
@@ -1076,7 +1293,7 @@ namespace ServisOptimizasyonSistemi
         }
     }
 
-    #region Model Sınıfları
+    #region Model Sınıfları 
 
     public class Calisan
     {
@@ -1089,19 +1306,20 @@ namespace ServisOptimizasyonSistemi
         public string KilometreAraligi { get; set; }
         public int BaslangicKm { get; set; }
         public int BitisKm { get; set; }
-        public ServisUcretleri ServisUcretleri { get; set; }
+        public ServisUcretDetaylari ServisUcretleri { get; set; } 
     }
 
-    public class ServisUcretleri
+
+    public class ServisUcretDetaylari
     {
-        [System.Text.Json.Serialization.JsonPropertyName("19")]
-        public double _19 { get; set; }
+        [JsonPropertyName("19")]
+        public double _19 { get; set; } // 19 kişilik servis ücreti
 
-        [System.Text.Json.Serialization.JsonPropertyName("27")]
-        public double _27 { get; set; }
+        [JsonPropertyName("27")]
+        public double _27 { get; set; } // 27 kişilik servis ücreti
 
-        [System.Text.Json.Serialization.JsonPropertyName("46")]
-        public double _46 { get; set; }
+        [JsonPropertyName("46")]
+        public double _46 { get; set; } // 46 kişilik servis ücreti
     }
 
     public class ServisUcret
@@ -1112,37 +1330,12 @@ namespace ServisOptimizasyonSistemi
 
     public class ServisSecimi
     {
-        public int ServisTipi { get; set; }
-        public int ServisSayisi { get; set; }
-        public int TasinanKisiSayisi { get; set; }
-        public double BirimFiyat { get; set; }
-        public double ToplamFiyat { get; set; }
-        public List<ServisSecimi> Detaylar { get; set; }
+        public int ServisTipi { get; set; } // Örneğin 19, 27, 46 kişilik
+        public int ServisSayisi { get; set; } // Bu tipten kaç adet servis olduğu
+        public int TasinanKisiSayisi { get; set; } // Bu servislerle taşınan toplam kişi sayısı
+        public double BirimFiyat { get; set; } // Servis başına düşen maliyet
+        public double ToplamFiyat { get; set; } // Bu servis tipi için toplam maliyet
+        public List<ServisSecimi> Detaylar { get; set; } // Eğer bir kombinasyonun detayıysa (EnUygunServisSeciminiYap içinde kullanılıyor)
     }
-
-    public class GoogleDistanceMatrixResponse
-    {
-        public string status { get; set; }
-        public List<Row> rows { get; set; }
-    }
-
-    public class Row
-    {
-        public List<Element> elements { get; set; }
-    }
-
-    public class Element
-    {
-        public string status { get; set; }
-        public Distance distance { get; set; }
-    }
-
-    public class Distance
-    {
-        public string text { get; set; }
-        public int value { get; set; }
-    }
-
-
     #endregion
 }
