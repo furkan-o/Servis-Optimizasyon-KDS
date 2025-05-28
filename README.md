@@ -19,7 +19,6 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
 1. **Gereksinimler**
    - .NET 8.0 (veya üzeri)
    - Windows işletim sistemi
-   - ~~[Google Maps Distance Matrix API](https://developers.google.com/maps/documentation/distance-matrix/overview) anahtarı~~
    - [OpenRouteService API](https://openrouteservice.org/dev/#/api-docs/v2/matrix/%7Bprofile%7D/post) anahtarı
 
 2. **Bağımlılıklar**
@@ -45,7 +44,7 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
 
 - `form1.cs` : Ana uygulama kodları ve algoritmalar.
 - `servisucretleri.json` : Servis araçlarının kilometre ve kapasite bazlı ücretleri.
-`Yapısı:`
+   - `Yapısı:`
  {
     "kilometreAraligi": "10-20",
     "baslangicKm": 10,
@@ -58,7 +57,7 @@ Bu proje, çalışanların adreslerine göre optimum servis güzergahı ve en uy
   },
 
 - `[bolge].json` : Her bölge için çalışan adresleri.
-`Yapısı:`
+   - `Yapısı:`
 {
     "adSoyad": "Gordon Norman",
     "yaklasikAdres": "Hamidiye mah. Fatih cd."
