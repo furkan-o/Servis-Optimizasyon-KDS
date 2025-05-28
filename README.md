@@ -77,4 +77,4 @@ Katkıda bulunmak isterseniz lütfen bir pull request gönderin veya issue açı
 
 ---
 
-**Not:** Google API anahtarınızı kimseyle paylaşmayınız. API kullanımında kota ve ücretlendirme Google tarafından belirlenmektedir.
+**Not:** OpenRouteService API anahtarınızı kimseyle paylaşmayınız. API kullanımında kota ve ücretlendirme Heigit tarafından belirlenmektedir.
